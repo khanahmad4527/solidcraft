@@ -259,6 +259,7 @@ pub mod ui_kit;
 mod ui_kit_guard_tests;
 pub mod update;
 pub mod view_pick;
+mod value_step;
 pub mod viewport;
 mod viewport_layout;
 pub mod workspace;
