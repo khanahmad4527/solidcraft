@@ -243,10 +243,21 @@ fn flange_height_and_bend_radius_step_with_arrows_and_wheel() {
     h.step(&json!({"key": "ArrowUp", "shift": true})).unwrap();
     h.frames(2);
     assert_eq!(flange(&h).1, "21 mm");
-    let height = at(&h);
-    h.call("ui.scroll", json!({"x": height.x, "y": height.y, "delta": -80.0}));
-    h.frames(2);
-    assert_eq!(flange(&h).1, "19 mm", "two notches down");
+    // Close in, then notch after notch at one spot: the box stays under the pointer while its arrow
+    // shrinks, so every notch steps it and none reaches the camera.
+    h.call("ui.camera", json!({"target": [50, 0, 15], "distance": 40}));
+    h.frames(4);
+    let rect = h.ctx.read_response(egui::Id::new("sc_canvas_value")).unwrap().rect;
+    let tip = h.at(&json!({"handle": "arrow"})).unwrap()[1];
+    let cam = h.app.cam;
+    for _ in 0..4 {
+        h.call("ui.scroll", json!({"x": rect.center().x, "y": rect.center().y, "delta": -40.0}));
+        h.frames(2);
+    }
+    assert_eq!(flange(&h).1, "17 mm", "four notches down");
+    assert_eq!(h.app.cam, cam, "the view did not zoom");
+    let moved = (h.at(&json!({"handle": "arrow"})).unwrap()[1] - tip).abs();
+    assert!(moved > f64::from(rect.height()), "the tip moved {moved}, further than the box is tall");
     // The Bend Radius row is found by its label, empty ("from the rule") does not step, a number does.
     h.step(&json!({"click": {"handle": "dialog:Bend Radius"}})).unwrap();
     h.step(&json!({"key": "ArrowUp"})).unwrap();
@@ -260,7 +271,7 @@ fn flange_height_and_bend_radius_step_with_arrows_and_wheel() {
     h.frames(2);
     let f = h.app.session.doc.features.last().unwrap();
     let solidcraft_engine::doc::FeatureKind::SheetFlange { height, radius, .. } = &f.kind else { panic!("flange feature: {:?}", f.kind) };
-    assert_eq!((height.as_str(), radius.as_deref()), ("19 mm", Some("3 mm")));
+    assert_eq!((height.as_str(), radius.as_deref()), ("17 mm", Some("3 mm")));
 }
 
 /// The Parameters window's expression boxes step too; Enter applies the stepped expression.
