@@ -5,8 +5,24 @@
 //! left as typed, and Up/Down move its text cursor as before. Every expression field gets this
 //! through `params_dialog::complete`, after its completions: while the completion list is open it
 //! keeps the arrows (`expression_complete::begin_frame` takes them before the field sees them).
+//! It is a preference (Preferences › Design, `step_values`), off by default: off, the fields
+//! behave as before.
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit};
+
+fn enabled_id() -> egui::Id {
+    egui::Id::new("value_step_enabled")
+}
+
+/// Turn stepping on or off for this frame, from the preference (the app calls this every frame).
+pub(crate) fn set_enabled(ctx: &egui::Context, on: bool) {
+    ctx.data_mut(|d| d.insert_temp(enabled_id(), on));
+}
+
+/// Whether value fields step this frame.
+pub(crate) fn enabled(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(enabled_id())).unwrap_or(false)
+}
 
 /// Most wheel notches one frame may add, so a runaway or hostile delta can't fling the value.
 const MAX_NOTCHES: f32 = 100.0;
@@ -21,7 +37,7 @@ pub(crate) fn step(ui: &egui::Ui, resp: &egui::Response, text: &mut String) -> b
     if !hovered {
         ui.data_mut(|d| d.remove::<f32>(wheel_key));
     }
-    if !resp.has_focus() || plain(text).is_none() {
+    if !enabled(ui.ctx()) || !resp.has_focus() || plain(text).is_none() {
         return false;
     }
     let mut tenths = ui.input(key_tenths);

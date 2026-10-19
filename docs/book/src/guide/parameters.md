@@ -31,7 +31,8 @@ applies what you typed, and **Up/Down** picks one of them first. A unit right af
 (`10 mm`) is left alone; anywhere else a unit is a prefix like any other, so `rad` followed by
 **Enter** gives `radius`.
 
-With no suggestions open, **Up/Down** step a plain number in any value field (a dialog's rows,
+With **Preferences › Design › Step values with the arrow keys and the wheel** on (it is off
+by default) and no suggestions open, **Up/Down** step a plain number in any value field (a dialog's rows,
 the value box beside the geometry, a sketch dimension, a parameter's expression) by 1 in the
 unit it is written in: `20 mm` becomes `21 mm`, `2,5 mm` becomes `3,5 mm`. Hold **Shift** for 10
 or **Alt/Option** for 0.1. The mouse wheel over the focused field does the same, a step a notch,

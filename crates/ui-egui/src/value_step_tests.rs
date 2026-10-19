@@ -68,8 +68,9 @@ fn anything_but_a_plain_number_is_left_as_typed() {
 }
 
 /// One focused value field (a dialog's, through `params_dialog::complete`) in a scroll area taller
-/// than the window.
+/// than the window, with value stepping on (`Field::new`) or off as by default (`Field::off`).
 struct Field {
+    on: bool,
     ctx: egui::Context,
     app: SolveApp,
     text: String,
@@ -81,11 +82,19 @@ struct Field {
 
 impl Field {
     fn new(text: &str) -> Self {
+        Self::with(text, true)
+    }
+
+    fn off(text: &str) -> Self {
+        Self::with(text, false)
+    }
+
+    fn with(text: &str, on: bool) -> Self {
         let ctx = egui::Context::default();
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         crate::params_dialog::publish(&mut app, &ctx);
         let id = egui::Id::new("value_step_test_field");
-        let mut f = Self { ctx, app, text: text.into(), id, changed: false, rect: egui::Rect::NOTHING, scroll: egui::Id::NULL };
+        let mut f = Self { on, ctx, app, text: text.into(), id, changed: false, rect: egui::Rect::NOTHING, scroll: egui::Id::NULL };
         f.ctx.memory_mut(|m| m.request_focus(id));
         f.frame(Vec::new());
         f.frame(Vec::new());
@@ -97,6 +106,7 @@ impl Field {
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 300.0))), events, ..Default::default() },
             |ui| {
                 crate::expression_complete::begin_frame(ui.ctx());
+                set_enabled(ui.ctx(), self.on);
                 crate::params_dialog::publish(&mut self.app, ui.ctx());
                 egui::CentralPanel::default().show(ui, |ui| {
                     self.scroll = egui::ScrollArea::vertical()
@@ -209,11 +219,11 @@ fn the_wheel_over_a_focused_field_steps_it_instead_of_scrolling() {
     assert!(f.scrolled() > 0.0, "the panel scrolls off the field");
 }
 
-/// #2320 as reported: in an edge Flange, the Height box beside the edge and the Bend Radius row
-/// both take Up/Down and the wheel, and OK makes the stepped flange.
-#[test]
-fn flange_height_and_bend_radius_step_with_arrows_and_wheel() {
+/// An edge Flange dialog open on a 100 x 60 base flange, its Height box (10 mm) beside the edge,
+/// with value stepping `on` or off.
+fn edge_flange(on: bool) -> Harness {
     let mut h = Harness::new();
+    h.app.preferences.step_values = on;
     h.app.run("sketch.create", json!({"plane": "XY", "name": "Base"})).unwrap();
     h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]})).unwrap();
     h.app.run("sketch.finish", json!({})).unwrap();
@@ -228,11 +238,23 @@ fn flange_height_and_bend_radius_step_with_arrows_and_wheel() {
     h.app.session.selection = vec![edge];
     h.step(&json!({"start": "sheet.flange"})).unwrap();
     h.frames(6);
-    let flange = |h: &Harness| match &h.app.dialog.as_ref().unwrap().kind {
+    assert_eq!(flange(&h), (1, "10 mm".into(), String::new()), "an edge flange, 10 mm high");
+    h
+}
+
+/// The open Flange dialog's type, height and bend radius.
+fn flange(h: &Harness) -> (usize, String, String) {
+    match &h.app.dialog.as_ref().unwrap().kind {
         crate::dialogs::Kind::Sheet(crate::dialogs_sheet::Sm::Flange { ty, height, radius, .. }) => (*ty, height.clone(), radius.clone()),
         _ => panic!("flange dialog"),
-    };
-    assert_eq!(flange(&h), (1, "10 mm".into(), String::new()), "an edge flange, 10 mm high");
+    }
+}
+
+/// #2320 as reported: in an edge Flange, the Height box beside the edge and the Bend Radius row
+/// both take Up/Down and the wheel, and OK makes the stepped flange.
+#[test]
+fn flange_height_and_bend_radius_step_with_arrows_and_wheel() {
+    let mut h = edge_flange(true);
     // The box sits at the arrow's tip, so it moves as the height does.
     let at = |h: &Harness| h.ctx.read_response(egui::Id::new("sc_canvas_value")).expect("the Height box beside the edge").rect.center();
     let height = at(&h);
@@ -278,6 +300,7 @@ fn flange_height_and_bend_radius_step_with_arrows_and_wheel() {
 #[test]
 fn parameter_expressions_step_and_apply() {
     let mut h = Harness::new();
+    h.app.preferences.step_values = true;
     h.app.run("parameters.add", json!({"name": "width", "expression": "10 mm"})).unwrap();
     h.step(&json!({"start": "parameters.change"})).unwrap();
     h.frames(4);
@@ -290,4 +313,55 @@ fn parameter_expressions_step_and_apply() {
     h.step(&json!({"key": "Enter"})).unwrap();
     h.frames(2);
     assert_eq!(h.app.session.doc.param("width").map(|p| p.expr.as_str()), Some("12 mm"));
+}
+
+/// Off, as by default, value fields behave as before: Up moves the text cursor home, the wheel
+/// scrolls the panel under the field, and the box beside the geometry follows its arrow.
+#[test]
+fn off_by_default_the_keys_and_the_wheel_do_what_they_did() {
+    assert!(!crate::prefs::Prefs::default().step_values);
+    assert!(!serde_json::from_value::<crate::prefs::Prefs>(json!({})).unwrap().step_values, "saved preferences without it");
+    let mut f = Field::off("20 mm");
+    f.key(Key::ArrowUp, Modifiers::NONE);
+    assert_eq!((f.text.as_str(), f.selection()), ("20 mm", (0, 0)), "Up moved the cursor home");
+    let over = f.rect.center();
+    f.wheel(over, MouseWheelUnit::Line, -3.0);
+    for _ in 0..30 {
+        f.frame(vec![Event::PointerMoved(over)]);
+    }
+    assert_eq!(f.text, "20 mm");
+    assert!(f.scrolled() > 0.0, "the wheel scrolled the panel");
+
+    let mut h = edge_flange(false);
+    let at = h.ctx.read_response(egui::Id::new("sc_canvas_value")).unwrap().rect.center();
+    h.step(&json!({"click": [at.x, at.y]})).unwrap();
+    h.step(&json!({"key": "ArrowUp"})).unwrap();
+    h.call("ui.scroll", json!({"x": at.x, "y": at.y, "delta": 40.0}));
+    h.frames(2);
+    assert_eq!(flange(&h).1, "10 mm", "neither Up nor the wheel stepped the Height box");
+    // Typed with the pointer over the box, the box follows the arrow's tip as before.
+    h.step(&json!({"key": "A", "cmd": true})).unwrap();
+    h.step(&json!({"text": "40 mm"})).unwrap();
+    h.frames(3);
+    assert_eq!(flange(&h).1, "40 mm");
+    let moved = h.ctx.read_response(egui::Id::new("sc_canvas_value")).unwrap().rect.center();
+    assert!((moved.y - at.y).abs() > 5.0, "the box moved with the arrow ({at:?} -> {moved:?})");
+}
+
+/// The preference is on Preferences › Design, and the control channel sets it.
+#[test]
+fn the_preference_is_on_the_general_page() {
+    let mut h = Harness::new();
+    crate::prefs::set(&mut h.app, &json!({"step_values": true})).unwrap();
+    assert!(h.app.preferences.step_values);
+    crate::prefs::set(&mut h.app, &json!({"step_values": false})).unwrap();
+    h.call("ui.prefs", json!({"open": "Design"}));
+    h.frames(3);
+    // The row is below the page's fold: scroll the page down to it, as a user would.
+    let window = h.ctx.memory(|m| m.area_rect(egui::Id::new("sc_prefs"))).unwrap();
+    h.call("ui.scroll", json!({"x": window.center().x, "y": window.center().y, "delta": -400.0}));
+    h.frames(30);
+    h.step(&json!({"click": {"handle": "prefs:step_values"}})).unwrap();
+    h.frames(2);
+    assert!(h.app.preferences.step_values, "the Design page's checkbox turns it on");
 }
