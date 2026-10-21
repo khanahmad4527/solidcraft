@@ -280,7 +280,10 @@ fn flange_height_and_bend_radius_step_with_arrows_and_wheel() {
     assert_eq!(h.app.cam, cam, "the view did not zoom");
     let moved = (h.at(&json!({"handle": "arrow"})).unwrap()[1] - tip).abs();
     assert!(moved > f64::from(rect.height()), "the tip moved {moved}, further than the box is tall");
-    // The Bend Radius row is found by its label, empty ("from the rule") does not step, a number does.
+    // The Bend Radius row (under Advanced) is found by its label, empty ("from the rule") does not
+    // step, a number does.
+    h.step(&json!({"click": {"handle": "dialog:section:Advanced"}})).unwrap();
+    h.frames(2);
     h.step(&json!({"click": {"handle": "dialog:Bend Radius"}})).unwrap();
     h.step(&json!({"key": "ArrowUp"})).unwrap();
     h.frames(2);
