@@ -353,7 +353,7 @@ fn off_by_default_the_keys_and_the_wheel_do_what_they_did() {
 
 /// The preference is on Preferences › Design, and the control channel sets it.
 #[test]
-fn the_preference_is_on_the_general_page() {
+fn the_preference_is_on_the_design_page() {
     let mut h = Harness::new();
     crate::prefs::set(&mut h.app, &json!({"step_values": true})).unwrap();
     assert!(h.app.preferences.step_values);
