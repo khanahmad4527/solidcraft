@@ -1297,7 +1297,9 @@ fn the_bend_table_and_the_dxf_follow_what_flat_cuts_leave_of_a_bend() {
     let text = csv["text"].as_str().unwrap_or_default();
     assert_eq!((text.lines().count(), csv["bends"].as_u64()), (2, Some(1)), "{text}");
     assert!(
-        text.lines().nth(1).is_some_and(|l| l.contains(",1,90.000000000,90.000000000,up,1.000000000,3.141592654,100.000000000,100.000000000,")),
+        text.lines()
+            .nth(1)
+            .is_some_and(|l| l.contains(",1,90.000000000,up,1.000000000,3.141592654,100.000000000,100.000000000,") && l.ends_with(",90.000000000")),
         "{text}"
     );
     // A slot across what is left splits the bend: a row and a line for each piece, both bend 1.
@@ -1600,7 +1602,9 @@ fn bend_table_exports_shop_dimensions_and_tracks_parameter_changes() {
     let undo = s.undo.len();
     let csv = run(&mut s, "sheet.export_bend_table", json!({}));
     let text = csv["text"].as_str().unwrap();
-    assert!(text.starts_with("body,rule,thickness_mm,k_factor,bend,angle_deg,included_angle_deg,direction,"));
+    assert!(text.starts_with("body,rule,thickness_mm,k_factor,bend,angle_deg,direction,"));
+    // The included angle comes last, so a reader that takes the columns by position is unaffected.
+    assert!(text.lines().next().is_some_and(|h| h.ends_with(",end_y_mm,included_angle_deg")), "{text}");
     assert!(text.contains("\"Shop, \"\"steel\"\"\""), "{text}");
     assert_eq!(text.lines().count(), 2);
     assert_eq!(csv["bends"], 1);
@@ -1652,9 +1656,9 @@ fn the_bend_table_gives_the_included_angle_beside_the_bend_angle() {
             let header: Vec<&str> = lines.next().unwrap_or_default().split(',').collect();
             let row: Vec<&str> = lines.next().unwrap_or_default().split(',').collect();
             let column = |name: &str| header.iter().position(|h| *h == name);
-            assert_eq!((column("angle_deg"), column("included_angle_deg")), (Some(5), Some(6)), "{text}");
+            assert_eq!((column("angle_deg"), column("included_angle_deg")), (Some(5), Some(14)), "{text}");
             let (angle, inside) = (format!("{deg:.9}"), format!("{included:.9}"));
-            assert_eq!((row.get(5).copied(), row.get(6).copied()), (Some(angle.as_str()), Some(inside.as_str())), "{display:?}: {text}");
+            assert_eq!((row.get(5).copied(), row.get(14).copied()), (Some(angle.as_str()), Some(inside.as_str())), "{display:?}: {text}");
             for format in ["json", "flat"] {
                 let table = if format == "json" {
                     let text = run(&mut s, "sheet.export_bend_table", json!({"format": "json"}))["text"].as_str().unwrap_or_default().to_string();

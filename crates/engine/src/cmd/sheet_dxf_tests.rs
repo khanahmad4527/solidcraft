@@ -492,6 +492,25 @@ fn a_bend_note_gives_the_included_angle_when_the_rule_reads_it_so() {
     }
 }
 
+/// A body whose base flange names its rule keeps that rule's notes whichever rule is active when
+/// the DXF is written, and a bend down reads its included angle the same way.
+#[test]
+fn a_bend_note_follows_the_bodys_own_rule_and_bends_down_too() {
+    let mut s = sheet_of_2mm();
+    run(&mut s, "sheet.manage_rules", json!({"name": "Sheet2", "angle_display": "included"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sheet.flange", json!({"sketch": "Base", "rule": "Sheet2"}));
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20, "angle": "58 deg", "flip": true}));
+    let notes = |s: &mut Session| -> Vec<String> {
+        entities(&export(s, json!({"bend_notes": true}))).iter().filter(|e| e.0 == "TEXT").map(|e| string(e, 1)).collect()
+    };
+    assert_eq!(notes(&mut s), ["B1 DOWN 122%%d R1"]);
+    run(&mut s, "sheet.manage_rules", json!({"name": "Other", "thickness": "2 mm", "angle_display": "bend", "active": true}));
+    assert_eq!(notes(&mut s), ["B1 DOWN 122%%d R1"], "another active rule does not change this body's notes");
+}
+
 /// Two sheet bodies: a lid and, 200 mm away, a side wall with one bend.
 fn lid_and_wall() -> Session {
     let mut s = Session::default();
