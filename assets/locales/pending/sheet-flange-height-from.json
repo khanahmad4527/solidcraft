@@ -1,0 +1,20 @@
+{
+  "en": {
+    "Height From": "Height From",
+    "Inner Sharp": "Inner Sharp",
+    "Outer Sharp": "Outer Sharp",
+    "Tangent": "Tangent"
+  },
+  "ja": {
+    "Height From": "高さの基準",
+    "Inner Sharp": "内側仮想シャープ",
+    "Outer Sharp": "外側仮想シャープ",
+    "Tangent": "正接"
+  },
+  "zh": {
+    "Height From": "高度基准",
+    "Inner Sharp": "内侧虚拟尖点",
+    "Outer Sharp": "外侧虚拟尖点",
+    "Tangent": "相切"
+  }
+}
