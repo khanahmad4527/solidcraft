@@ -2338,8 +2338,9 @@ impl SheetBody {
         Ok(())
     }
 
-    /// Add an edge flange on the panel edge nearest `pick` (world): `height` to the outer face
-    /// from the virtual sharp, `angle` (0…180°), inside / outside / middle bend position.
+    /// Add an edge flange on the panel edge nearest `pick` (world): `height` measured from the
+    /// outer virtual sharp ([`HeightFrom::Outer`]), `angle` (0…180°), inside / outside / middle /
+    /// material_outside / tangent bend position (see `add_flanges_each`).
     pub fn add_flange(&mut self, pick: Vec3, height: f64, angle: f64, radius: f64, position: &str, flip: bool) -> Result<usize> {
         self.add_flanges(&[pick], height, angle, radius, position, flip)?.into_iter().next().ok_or_else(|| DocError::Invalid("flange".into()))
     }
@@ -2398,11 +2399,30 @@ impl SheetBody {
                 return Err(DocError::Invalid(format!("{}the flange angle must be between 0 and 180°", on(k))));
             }
             let sharp = (radius + self.t) * (e.angle / 2.0).tan();
+            // How far inside the picked edge the bend starts (the base is cut back that far), with
+            // bend angle θ, inner radius R and thickness T:
+            // - inside: (R + T)·tan(θ/2), the outer virtual sharp on the edge (at 90° the flange's
+            //   outer face is flush with the edge's face);
+            // - outside: 0, the bend starts at the edge and lies wholly outside it (`sheet.flange`
+            //   also takes `bend_outside` and saves it as `outside`);
+            // - middle: half of inside;
+            // - material_outside: R·tan(θ/2), the inner virtual sharp on the edge (at 90° the
+            //   flange's inner face is flush with the edge's face, its material outside);
+            // - tangent: from 90° on R + T, the bend's outer face tangent to the edge's face (it
+            //   touches that face a quarter turn into the bend and nothing of the bend passes it);
+            //   below 90° the outer face never turns parallel to the edge's face, so the bend
+            //   reaches furthest out at its end: (R + T)·sin θ puts that end on the edge's face
+            //   (the leg leans on out past it). Both are R + T at 90°.
             let setback = match position {
                 "inside" | "" => sharp,
                 "outside" => 0.0,
                 "middle" | "mid" => sharp / 2.0,
-                other => return Err(DocError::Invalid(format!("unknown bend position `{other}` (inside, outside or middle)"))),
+                "material_outside" => radius * (e.angle / 2.0).tan(),
+                "tangent" if e.angle < std::f64::consts::FRAC_PI_2 => (radius + self.t) * e.angle.sin(),
+                "tangent" => radius + self.t,
+                other => {
+                    return Err(DocError::Invalid(format!("unknown bend position `{other}` (inside, outside, middle, material_outside or tangent)")));
+                }
             };
             let least = e.from.before_leg(e.angle, radius, self.t);
             let leg = e.height - least;
@@ -6096,6 +6116,16 @@ mod tests {
         assert!(flange.d.dot(parent.n).abs() > 0.99);
         assert!((flange.len - parent.leg).abs() < 1e-6);
         holds_the_flat_material(&s, "a flange on a folded panel's side");
+    }
+
+    #[test]
+    fn a_bend_position_only_the_command_takes_as_another_name_is_refused_when_built() {
+        // `sheet.flange` saves `bend_outside` as `outside`; a design that names it itself is
+        // refused rather than built (or edited) as some other position.
+        let mut s = plate(200.0, 100.0);
+        let e = s.add_flange(Vec3::new(100.0, 0.0, 2.5), 40.0, std::f64::consts::FRAC_PI_2, 2.5, "bend_outside", false).unwrap_err().to_string();
+        assert!(e.contains("unknown bend position `bend_outside`"), "{e}");
+        assert!(s.flanges.is_empty());
     }
 
     #[test]

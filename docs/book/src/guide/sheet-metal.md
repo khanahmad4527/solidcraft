@@ -42,6 +42,23 @@ sharp and 16 from the tangent.
 {"command":"sheet.flange","params":{"edges":[[50,0,2]],"height":20,"height_from":"inner"}}
 ```
 
+Where an edge flange's bend starts is its `position` (Bend Position in the Flange dialog): how
+far inside the picked edge the base is cut back. `inside` (the default) puts the outer virtual
+sharp on the edge, (R + T)·tan(θ/2) inside it, so at 90° the flange's outer face is flush with
+the edge's face; `outside` (`sheet.flange` also takes `bend_outside` and saves it as `outside`) starts the bend at the edge, which
+leaves the base whole and the bend wholly outside; `middle` cuts back half of `inside`;
+`material_outside` puts the inner virtual sharp on the edge, R·tan(θ/2) inside it, so at 90°
+the flange's inner face is flush with the edge's face and its material is outside; `tangent`
+is for bends past 90°: it cuts back R + T, so the outside of the bend is tangent to the edge's
+face, touching it a quarter turn into the bend with nothing of the bend past it. At 90° that
+is `inside`. Below 90° the outside of the bend never turns parallel to the edge's face, so
+`tangent` cuts back (R + T)·sin θ instead: the bend's end is on the edge's face and the leg
+leans on out past it.
+
+```json
+{"command":"sheet.flange","params":{"edges":[[50,0,2]],"height":20,"angle":"120 deg","position":"tangent"}}
+```
+
 An edge flange takes its setback off its own edge only. Where that edge ends at an inside
 corner of the base (the base runs on past it, like the leg of an L), the rest of the base
 stays, and the rule's **bend relief** (`relief_width` and `relief_depth`; Relief Width and

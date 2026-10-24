@@ -21,7 +21,9 @@ pub static COMMANDS: &[CommandSpec] = &[
          height (along the flange, to its far edge), angle? (default 90 deg), radius? (default: rule), \
          height_from?: outer|inner|tangent (where the height is measured from: the outer virtual sharp (default), \
          the inner virtual sharp, or past 90 deg the line square to the flange touching the bend's outside (tangent; up to 90 deg the outer sharp)), \
-         position?: inside|outside|middle, flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
+         position?: inside|outside|middle|material_outside|tangent (where the bend starts: the outer virtual sharp on the edge (default), \
+         the bend starting at the edge (bend_outside is the same), half way, the inner virtual sharp on the edge, \
+         or the bend's outer face tangent to the edge's face (below 90 deg the bend's end on that face)), flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
          the relief at the corners these flanges make (default: the rule's); \
          type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
          Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
@@ -204,9 +206,13 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(r) = &radius {
                 check_expr(s, r, Kind::Length, cmd, "radius")?;
             }
-            let position = str_(p, "position").unwrap_or("inside").to_ascii_lowercase();
-            if !matches!(position.as_str(), "inside" | "outside" | "middle") {
-                return Err(bad(cmd, "`position` must be inside, outside or middle"));
+            let mut position = str_(p, "position").unwrap_or("inside").to_ascii_lowercase();
+            if !matches!(position.as_str(), "inside" | "outside" | "bend_outside" | "middle" | "material_outside" | "tangent") {
+                return Err(bad(cmd, "`position` must be inside, outside, middle, material_outside or tangent"));
+            }
+            // The bend starting at the edge is `outside`, whichever name asked for it.
+            if position == "bend_outside" {
+                position = "outside".into();
             }
             // Where the heights are measured from; the outer sharp (the default) is saved as nothing.
             let height_from = match p.get("height_from").filter(|v| !v.is_null()) {

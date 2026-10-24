@@ -5148,3 +5148,62 @@ fn an_edge_flange_measured_from_the_tangent_does_not_jump_as_its_angle_passes_90
         assert!((top - top90).abs() < 1e-2 && (flat - flat90).abs() < 1e-2, "{deg}°: top {top} flat {flat}, at 90° {top90} {flat90}");
     }
 }
+
+#[test]
+fn edge_flange_material_outside_and_tangent_positions_start_the_bend_where_they_say() {
+    // T = 2, R = 2, K = 0.4, height 20 from the outer sharp on the edge y = 0. Setback (where the
+    // bend starts, inside the edge): material_outside R·tan(θ/2), tangent R + T, outside 0, and
+    // bend_outside the same as outside. The flange's outermost point (least y) is the setback less
+    // what reaches furthest out: R + T past 90° (the bend's outside a quarter turn in), at 90°
+    // the outer face, R + T. The flat is 60 − setback + θ·(R + K·T) + 20 − (R + T)·tan(θ/2).
+    let (t, r, k) = (2.0, 2.0, 0.4);
+    for deg in [90.0f64, 120.0] {
+        let th = deg.to_radians();
+        let half = (th / 2.0).tan();
+        for (position, setback) in [("material_outside", r * half), ("tangent", r + t), ("outside", 0.0), ("bend_outside", 0.0)] {
+            let what = format!("{deg}° {position}");
+            let mut s = Session::default();
+            r2_base(&mut s);
+            run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20, "angle": format!("{deg} deg"), "position": position}));
+            let least_y = bbox(&mut s)["min"][1].as_f64().unwrap_or(f64::NAN);
+            assert!((least_y - (setback - (r + t))).abs() < 1e-6, "{what}: least y {least_y}");
+            let length = flat(&mut s)["flat_size_mm"][1].as_f64().unwrap_or(f64::NAN);
+            let want = 60.0 - setback + th * (r + k * t) + 20.0 - (r + t) * half;
+            assert!((length - want).abs() < 1e-6, "{what}: flat {length}, want {want}");
+            let saved = serde_json::to_value(s.doc.features.last().map(|f| f.kind.clone())).unwrap_or_default();
+            assert_eq!(saved["position"], if position == "bend_outside" { "outside" } else { position }, "{what}");
+        }
+    }
+    // Below 90° the tangent position puts the bend's end on the edge's face: at 60° the setback
+    // is (R + T)·sin 60° = 3.464, the leg 20 − (R + T)·tan 30° = 17.691 leans on out past the
+    // face, so the least y is −leg·cos 60° = −8.845. Through 90° the setback does not jump.
+    let th = 60f64.to_radians();
+    let (setback, leg) = ((r + t) * th.sin(), 20.0 - (r + t) * (th / 2.0).tan());
+    let mut s = Session::default();
+    r2_base(&mut s);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20, "angle": "60 deg", "position": "tangent"}));
+    let least_y = bbox(&mut s)["min"][1].as_f64().unwrap_or(f64::NAN);
+    assert!((least_y + leg * th.cos()).abs() < 1e-6, "60° tangent: least y {least_y}, want {}", -leg * th.cos());
+    let length = flat(&mut s)["flat_size_mm"][1].as_f64().unwrap_or(f64::NAN);
+    let want = 60.0 - setback + th * (r + k * t) + leg;
+    assert!((length - want).abs() < 1e-6, "60° tangent: flat {length}, want {want}");
+    let flat_at = |deg: f64| {
+        let mut s = Session::default();
+        r2_base(&mut s);
+        run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20, "angle": format!("{deg} deg"), "position": "tangent"}));
+        flat(&mut s)["flat_size_mm"][1].as_f64().unwrap_or(f64::NAN)
+    };
+    let (below, at, above) = (flat_at(90.0 - 1e-3), flat_at(90.0), flat_at(90.0 + 1e-3));
+    assert!((below - at).abs() < 1e-2 && (above - at).abs() < 1e-2, "flats {below} {at} {above}");
+    // The default is still inside, and an unknown position is refused without a feature.
+    let mut s = Session::default();
+    r2_base(&mut s);
+    let features = s.doc.features.len();
+    let e = s.execute("sheet.flange", &json!({"edges": [[50, 0, 2]], "height": 20, "position": "flush"})).unwrap_err().to_string();
+    assert!(e.contains("`position` must be inside, outside, middle, material_outside or tangent"), "{e}");
+    assert_eq!(s.doc.features.len(), features);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20}));
+    let saved = serde_json::to_value(s.doc.features.last().map(|f| f.kind.clone())).unwrap_or_default();
+    assert_eq!(saved["position"], "inside");
+    assert!((bbox(&mut s)["min"][1].as_f64().unwrap_or(f64::NAN)).abs() < 1e-6);
+}
