@@ -333,7 +333,7 @@ fn bend_table_picker_writes_the_current_body() {
         let contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(contents.lines().count(), 2);
-        assert!(contents.contains(",90.000000000,90.000000000,up,2.500000000,"), "{contents}");
+        assert!(contents.contains(",90.000000000,up,2.500000000,"), "{contents}");
         assert_eq!(app.session.undo.len(), undo);
     }
 }

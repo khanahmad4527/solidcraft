@@ -211,7 +211,8 @@ computing a point on a face with holes or a curved outline: `model.faces` gives 
 For a shop drawing or spreadsheet, `sheet.export_bend_table` returns CSV by default; choose
 `format: "json"` for structured data. It includes the sheet rule, thickness, bend angles,
 radii, allowances and flat centre-line coordinates. Each bend has its bend angle (`angle_deg`)
-and, beside it, its included angle (`included_angle_deg`, below). Lengths use millimetres and
+and its included angle (`included_angle_deg`, below; the CSV's last column, so the columns before
+it keep their places). Lengths use millimetres and
 angles use degrees. A bend is listed where its centre line has material: one that a cut-out has shortened
 gives the length and ends it has left, and one that cut-outs split gives a row for every piece,
 all with the bend's number (the flat pattern and the DXF draw the same pieces as bend lines).

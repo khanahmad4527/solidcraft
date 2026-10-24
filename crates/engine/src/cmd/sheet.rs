@@ -910,18 +910,17 @@ fn export_bend_table(s: &mut Session, p: &Value) -> Result<Value> {
         // Always quote text fields: body/rule names may include commas, quotes or newlines.
         let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
         let mut csv =
-            "body,rule,thickness_mm,k_factor,bend,angle_deg,included_angle_deg,direction,radius_mm,allowance_mm,length_mm,start_x_mm,start_y_mm,end_x_mm,end_y_mm\r\n"
+            "body,rule,thickness_mm,k_factor,bend,angle_deg,direction,radius_mm,allowance_mm,length_mm,start_x_mm,start_y_mm,end_x_mm,end_y_mm,included_angle_deg\r\n"
                 .to_string();
         for b in sh.bends() {
             csv.push_str(&format!(
-                "{},{},{:.9},{:.9},{},{:.9},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}\r\n",
+                "{},{},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}\r\n",
                 quote(&sh.body),
                 quote(&sh.rule),
                 sh.t,
                 sh.k,
                 b.index,
                 b.angle_deg,
-                b.included_angle_deg(),
                 if b.up { "up" } else { "down" },
                 b.radius,
                 b.allowance,
@@ -929,7 +928,8 @@ fn export_bend_table(s: &mut Session, p: &Value) -> Result<Value> {
                 b.start.x,
                 b.start.y,
                 b.end.x,
-                b.end.y
+                b.end.y,
+                b.included_angle_deg()
             ));
         }
         csv
