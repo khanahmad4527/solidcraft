@@ -333,7 +333,7 @@ fn bend_table_picker_writes_the_current_body() {
         let contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(contents.lines().count(), 2);
-        assert!(contents.contains(",90.000000000,up,2.500000000,"), "{contents}");
+        assert!(contents.contains(",90.000000000,90.000000000,up,2.500000000,"), "{contents}");
         assert_eq!(app.session.undo.len(), undo);
     }
 }
@@ -388,6 +388,51 @@ fn rules_dialog_picks_the_corner_relief_shape() {
         assert_eq!(h.app.session.doc.sheet_rule(None).corner_relief_shape, "tear");
         let torn = h.app.session.model.state().sheets.last().map(|s| s.flanges.iter().filter(|f| f.tear == (true, true)).count());
         assert_eq!((rounds(&h.app), torn), (Some(0), Some(4)));
+    }
+}
+
+/// The rule manager's angle display: picked in the dialog, it reaches the rule and the bend notes
+/// of the part made with it, and the dialog shows it the next time.
+#[test]
+fn rules_dialog_sets_how_bend_angles_read() {
+    for mode in [crate::shell::LayoutMode::Floating, crate::shell::LayoutMode::Docked] {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.set", json!({"layout":mode}));
+        h.app.run("sheet.manage_rules", json!({"name": "AL2", "thickness": "2 mm", "bend_radius": "1 mm", "active": true})).unwrap();
+        h.app.run("sketch.create", json!({"plane": "XY", "name": "Base"})).unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+        h.app.run("sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20, "angle": "58 deg"})).unwrap();
+        let shown = |app: &SolveApp| match app.dialog.as_ref().map(|d| &d.kind) {
+            Some(Kind::Sheet(Sm::Rules { angles, .. })) => Some(*angles),
+            _ => None,
+        };
+        let note = |app: &mut SolveApp| {
+            let dxf = app.session.execute("sheet.export_dxf", &json!({"bend_notes": true})).unwrap();
+            dxf["dxf"].as_str().unwrap_or_default().lines().map(str::trim).find(|l| l.starts_with("B1 ")).map(str::to_string)
+        };
+        assert_eq!(note(&mut h.app).as_deref(), Some("B1 UP 58%%d R1"));
+        h.step(&json!({"start": "sheet.manage_rules"})).unwrap();
+        h.frames(3);
+        assert_eq!(shown(&h.app), Some(0), "a rule starts with bend angles");
+        h.step(&json!({"click": {"handle": "dialog:Angle Display"}})).unwrap();
+        h.step(&json!({"click": {"handle": "dialog:Angle Display:Included Angle"}})).unwrap();
+        assert_eq!(shown(&h.app), Some(1));
+        h.step(&json!({"widget": "OK"})).unwrap();
+        assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+        assert_eq!(h.app.session.doc.sheet_rule(None).angle_display, "included");
+        assert_eq!(note(&mut h.app).as_deref(), Some("B1 UP 122%%d R1"));
+        h.step(&json!({"start": "sheet.manage_rules"})).unwrap();
+        h.frames(3);
+        assert_eq!(shown(&h.app), Some(1), "the dialog shows the rule's display");
+        // Back to bend angles; the rule's other values are as they were.
+        h.step(&json!({"click": {"handle": "dialog:Angle Display"}})).unwrap();
+        h.step(&json!({"click": {"handle": "dialog:Angle Display:Bend Angle"}})).unwrap();
+        h.step(&json!({"widget": "OK"})).unwrap();
+        let rule = h.app.session.doc.sheet_rule(None);
+        assert_eq!((rule.angle_display.as_str(), rule.thickness.as_str()), ("bend", "2 mm"));
+        assert_eq!(note(&mut h.app).as_deref(), Some("B1 UP 58%%d R1"));
     }
 }
 

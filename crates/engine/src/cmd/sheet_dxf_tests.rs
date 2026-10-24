@@ -471,6 +471,27 @@ fn a_bend_note_sits_beside_each_bend_line_when_asked_for() {
     assert!(note.is_some_and(|e| values(e, 40) == [5.0]));
 }
 
+#[test]
+fn a_bend_note_gives_the_included_angle_when_the_rule_reads_it_so() {
+    // The included angle is 180° less the bend angle: 122° for a 58° bend, 90° for a 90° one.
+    for (deg, included) in [(58.0, 122.0), (90.0, 90.0)] {
+        let mut plain = Vec::new();
+        for display in ["bend", "included"] {
+            let mut s = sheet_of_2mm();
+            run(&mut s, "sheet.manage_rules", json!({"name": "Sheet2", "angle_display": display}));
+            let mut s = plate_in(s, &[]);
+            run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20, "angle": format!("{deg} deg")}));
+            let dxf = export(&mut s, json!({"bend_notes": true}));
+            let notes: Vec<String> = entities(&dxf).iter().filter(|e| e.0 == "TEXT").map(|e| string(e, 1)).collect();
+            let shown = if display == "included" { included } else { deg };
+            assert_eq!(notes, [format!("B1 UP {shown}%%d R1")], "{deg}° under {display}");
+            plain.push(export(&mut s, json!({})));
+        }
+        // Without notes the setting changes nothing in the file.
+        assert_eq!(plain.first(), plain.get(1), "{deg}°");
+    }
+}
+
 /// Two sheet bodies: a lid and, 200 mm away, a side wall with one bend.
 fn lid_and_wall() -> Session {
     let mut s = Session::default();
