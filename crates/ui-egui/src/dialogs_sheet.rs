@@ -21,8 +21,8 @@ use crate::theme::Tokens;
 const FOLD_POSITIONS: [&str; 4] = ["centerline", "start", "end", "mould"];
 const FOLD_POSITION_LABELS: [&str; 4] = ["Centerline", "Start of Bend", "End of Bend", "Outside Mould Line"];
 const FLANGE_TYPES: [&str; 3] = ["Base", "Edge", "Contour"];
-const POSITIONS: [&str; 3] = ["inside", "outside", "middle"];
-const POSITION_LABELS: [&str; 3] = ["Inside", "Outside", "Middle"];
+const POSITIONS: [&str; 5] = ["inside", "outside", "middle", "material_outside", "tangent"];
+const POSITION_LABELS: [&str; 5] = ["Inside", "Outside", "Middle", "Material Outside", "Tangent to Edge"];
 /// Where an edge flange's height is measured from (`height_from`; the first is the default).
 const HEIGHT_FROM: [&str; 3] = ["outer", "inner", "tangent"];
 const HEIGHT_FROM_LABELS: [&str; 3] = ["Outer Sharp", "Inner Sharp", "Tangent"];

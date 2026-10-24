@@ -773,6 +773,40 @@ fn flange_dialog_measures_the_height_from_the_chosen_datum() {
     }
 }
 
+/// The Flange dialog's Bend Position offers material outside and tangent, and Edit Feature shows them again.
+#[test]
+fn flange_dialog_offers_material_outside_and_tangent_bend_positions() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY", "name": "Base"})).unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    h.app.session.selection = edge_sel(&h.app.session, Vec3::new(50.0, 0.0, 2.5)).into_iter().collect();
+    h.app.start("sheet.flange");
+    h.frames(3);
+    h.step(&json!({"click": {"handle": "dialog:Bend Position"}})).unwrap();
+    h.step(&json!({"click": {"handle": "dialog:Bend Position:Material Outside"}})).unwrap();
+    let d = h.app.dialog.clone().unwrap();
+    let c = apply_commands(&h.app, &d).unwrap();
+    assert_eq!(c[0].1["position"], json!("material_outside"), "{}", c[0].1);
+    h.step(&json!({"widget": "OK"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    let id = h.app.session.doc.features.last().map(|f| f.id).unwrap();
+    let mut e = edit_dialog(&h.app, id, None).unwrap();
+    assert!(matches!(&e.kind, Kind::Sheet(Sm::Flange { position: 3, .. })));
+    if let Kind::Sheet(Sm::Flange { position, .. }) = &mut e.kind {
+        *position = 4;
+    }
+    let commands = apply_commands(&h.app, &e).unwrap();
+    assert_eq!(commands[0].1["params"]["position"], json!("tangent"));
+    run_all(&mut h.app, commands);
+    let saved = match h.app.session.doc.features.last().map(|f| &f.kind) {
+        Some(FeatureKind::SheetFlange { position, .. }) => position.clone(),
+        _ => String::new(),
+    };
+    assert_eq!(saved, "tangent");
+}
+
 /// Convert takes a fixed face and, for a solid or shelled body, its bend edges; Edit Feature
 /// brings both back.
 #[test]

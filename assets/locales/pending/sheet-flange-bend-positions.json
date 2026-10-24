@@ -1,0 +1,14 @@
+{
+  "en": {
+    "Material Outside": "Material Outside",
+    "Tangent to Edge": "Tangent to Edge"
+  },
+  "ja": {
+    "Material Outside": "材料外側",
+    "Tangent to Edge": "エッジに正接"
+  },
+  "zh": {
+    "Material Outside": "材料在外",
+    "Tangent to Edge": "与边相切"
+  }
+}
