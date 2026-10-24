@@ -60,6 +60,9 @@ pub static COMMANDS: &[CommandSpec] = &[
          gap: between flanges that meet at a corner, whose ends are closed toward each other at any angle); \
          corner_relief_shape?: notch|round|rectangular|tear (what is cut where two bends meet at a corner of the base: round and rectangular a relief \
          `corner_relief` across; tear none, each bend's end is cut straight from the corner to its flange's end; default notch); \
+         bend_relief_shape?: rectangular|round (the bend relief where a flange's bend ends beside more of the sheet: rectangular a slot \
+         `relief_width` wide and `relief_depth` deep, round the same slot with a half-round end, at least half its width deep; \
+         default rectangular); \
          active?: bool; delete?: bool",
     ),
     CommandSpec::new("sheet.rules", "List Sheet Metal Rules", list_rules).icon("sheet_rules").noundo().doc_only().params("→ rules with their expressions and values, and the active one"),
@@ -138,8 +141,8 @@ fn rule_param(s: &Session, p: &Value, cmd: &str) -> Result<Option<String>> {
 
 /// Sheet values a flange takes from its rule. Passing one to `sheet.flange` is refused rather
 /// than ignored, so a script never gets a part of another thickness than it asked for.
-const RULE_ONLY: [&str; 8] =
-    ["thickness", "k_factor", "bend_radius", "relief_width", "relief_depth", "corner_relief", "corner_relief_shape", "hem_gap"];
+const RULE_ONLY: [&str; 9] =
+    ["thickness", "k_factor", "bend_radius", "relief_width", "relief_depth", "corner_relief", "corner_relief_shape", "bend_relief_shape", "hem_gap"];
 
 /// The two rule values an edge flange may set for itself: the corner relief.
 const EDGE_RELIEF: [&str; 2] = ["corner_relief", "corner_relief_shape"];
@@ -440,6 +443,10 @@ fn rules(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(shape) = p.get("corner_relief_shape").filter(|v| !v.is_null()) {
         let shape = shape.as_str().and_then(solidcraft_doc::sheet::ReliefShape::parse);
         rule.corner_relief_shape = shape.ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round, rectangular or tear"))?.name().into();
+    }
+    if let Some(shape) = p.get("bend_relief_shape").filter(|v| !v.is_null()) {
+        let shape = shape.as_str().and_then(solidcraft_doc::sheet::BendReliefShape::parse);
+        rule.bend_relief_shape = shape.ok_or_else(|| bad(cmd, "`bend_relief_shape` must be rectangular or round"))?.name().into();
     }
     let (vals, _) = s.doc.param_values();
     let values = s.doc.rule_values(&vals, &rule).map_err(|e| bad(cmd, e.to_string()))?;

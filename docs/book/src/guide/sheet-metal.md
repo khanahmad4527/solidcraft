@@ -30,7 +30,12 @@ stays, and the rule's **bend relief** (`relief_width` and `relief_depth`; Relief
 Relief Depth in Sheet Metal Rules) is cut into it beside the bend's end: a slot the relief
 width wide, from the relief depth before the bend line to the relief width past the flange's
 far edge in the flat pattern. The bend and the flange are then free of the base, folded and
-flat. A relief that can't be cut (a width under 0.01 mm, one as wide as the base beside the
+flat. The rule's `bend_relief_shape` (**Bend Relief Shape** in Sheet Metal Rules, next to the
+corner relief's shape) says how the slot ends in the base: `rectangular` (the default) square,
+or `round` with a half round the relief width across, so that it has no sharp inner corners.
+The round keeps the slot's depth, except where the relief depth is less than half the relief
+width: there the slot is half its width deep, so that its straight sides reach the bend line
+and nothing of the base stays on the bend's end. A relief that can't be cut (a width under 0.01 mm, one as wide as the base beside the
 bend, or a slot that would cut the base apart) is left out, and the flange feature reports a
 warning saying where.
 

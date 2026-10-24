@@ -5159,3 +5159,119 @@ fn a_return_on_a_wall_can_stop_short_of_its_edge_too() {
     let want = wall + 70.0 * bend_section(20.0) - 4.0 * 70.0 * 2.0 - 2.0 * RELIEF_SLOT;
     assert!(rel(volume(&mut s), want) < 1e-6, "{} vs {want}", volume(&mut s));
 }
+
+/// Whether the base of the last sheet has material at the flat point (x, y).
+fn base_has(s: &Session, x: f64, y: f64) -> bool {
+    s.model.state().sheets.last().is_some_and(|b| b.base.contains(solidcraft_geom::Vec2::new(x, y)))
+}
+
+/// Every body is a valid closed solid of one shell.
+fn valid_solids(s: &Session) -> bool {
+    let state = s.model.state();
+    !state.bodies.is_empty() && state.bodies.iter().all(|b| b.body.validity().is_empty() && b.body.shell_count() == 1)
+}
+
+/// The rule's bend relief shape, on the flange of [`an_edge_flange_can_stop_short_of_the_ends_of_its_edge`]
+/// that stops 10 mm short of its edge's start and 20 mm short of its end: a 70 mm bend on the line
+/// x = 4 (the flange's 4 mm setback strip is taken from the base along it), from y = 90 to y = 20,
+/// with a relief slot `w` wide beside each end. Its slot reaches `d` before the bend line
+/// (rectangular), or `max(d, w/2)` with a half-round end (round), which leaves the two corners of
+/// that square end, `(1 - pi/4) x w^2 / 2`, in the part. Either way the strip beside the bend is
+/// gone across the slot's width, the flat pattern is one piece and the part a valid solid.
+#[test]
+fn the_bend_relief_shape_is_a_rule_setting() {
+    let mut s = Session::default();
+    setback_sheet(&mut s);
+    let listed = |s: &mut Session| {
+        let listed = run(s, "sheet.rules", json!({}));
+        (listed["rules"][0]["rule"]["bend_relief_shape"].clone(), listed["rules"][0]["values"]["bend_relief_shape"].clone())
+    };
+    // Rectangular is the default, and a rule that keeps it does not name it.
+    assert_eq!(listed(&mut s), (Value::Null, json!("rectangular")));
+    run(&mut s, "sheet.flange", json!({"edges": [[0, 50, 2]], "height": 40, "start_setback": "10 mm", "end_setback": "20 mm"}));
+    let no_slot = 30000.0 - 4.0 * 70.0 * 2.0 + 70.0 * bend_section(40.0);
+    let rectangular = volume(&mut s);
+    assert!(rel(rectangular, no_slot - 2.0 * RELIEF_SLOT) < 1e-6, "the default is the rectangular slot: {rectangular}");
+    assert!(valid_solids(&s));
+    for (w, d) in [(2.0_f64, 1.0_f64), (2.0, 0.0), (4.0, 1.0), (2.0, 1.5)] {
+        for shape in ["rectangular", "round"] {
+            let what = format!("{shape}, {w} wide, {d} deep");
+            let r = run(
+                &mut s,
+                "sheet.manage_rules",
+                json!({"name": "Demo", "bend_relief_shape": shape, "relief_width": format!("{w} mm"), "relief_depth": format!("{d} mm")}),
+            );
+            assert_eq!(r["values"]["bend_relief_shape"], shape, "{what}");
+            assert!(no_errors_or_warnings(&s), "{what}: {:?}", s.model.results);
+            let round = shape == "round";
+            let deep = if round { d.max(w / 2.0) } else { d };
+            let slot = w * (deep + 4.0) - if round { (1.0 - PI / 4.0) * w * w / 2.0 } else { 0.0 };
+            let want = no_slot - 2.0 * slot * 2.0;
+            assert!(rel(volume(&mut s), want) < 1e-6, "{what}: {} vs {want}", volume(&mut s));
+            assert!(valid_solids(&s), "{what}: the part is a valid solid");
+            assert_eq!(flat(&mut s)["outline"].as_array().map(Vec::len), Some(1), "{what}: the flat pattern is one piece");
+            // The bend is free: nothing of the base beside its ends, from the bend line out
+            // across the strip, the slot's whole width; the slot ends `deep` before the bend line
+            // (in its middle), and the strip goes on past it.
+            for f in [0.01, 0.5, 0.99] {
+                for x in [0.01, 1.0, 2.0, 3.0, 3.99] {
+                    for y in [90.0 + w * f, 20.0 - w * f] {
+                        assert!(!base_has(&s, x, y), "{what}: base material at ({x}, {y})");
+                    }
+                }
+            }
+            for y in [90.0 + w / 2.0, 20.0 - w / 2.0] {
+                assert!(base_has(&s, 4.0 + deep + 0.01, y) && !base_has(&s, 4.0 + deep - 0.01, y), "{what}: the slot is {deep} deep");
+            }
+            assert!(base_has(&s, 2.0, 90.0 + w + 0.01) && base_has(&s, 2.0, 20.0 - w - 0.01), "{what}: the strip goes on past the slot");
+        }
+    }
+    // The round end's rule is saved, reopens, and other settings leave it alone; undo takes the
+    // changes back one at a time.
+    run(
+        &mut s,
+        "sheet.manage_rules",
+        json!({"name": "Demo", "bend_relief_shape": " Round ", "relief_width": "Thickness", "relief_depth": "Thickness * 0.5"}),
+    );
+    let (rule, values) = listed(&mut s);
+    assert!(rule == "round" && values == "round", "{rule} {values}");
+    let rounded = volume(&mut s);
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(rel(volume(&mut reopened), rounded) < 1e-9 && valid_solids(&reopened));
+    run(&mut s, "sheet.manage_rules", json!({"name": "Demo", "hem_gap": "0.02 mm"}));
+    assert!(listed(&mut s).1 == "round" && volume(&mut s) == rounded);
+    run(&mut s, "sheet.manage_rules", json!({"name": "Demo", "bend_relief_shape": "RECTANGULAR"}));
+    assert_eq!(listed(&mut s), (Value::Null, json!("rectangular")), "a rule back at rectangular does not name it");
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(listed(&mut s).1, "round");
+    assert!(volume(&mut s) == rounded);
+}
+
+/// Only the two names are bend relief shapes (the corner relief's `notch` and `tear` are not),
+/// a refused one changes nothing, and a flange can't set the rule's shape for itself. A rule
+/// that keeps the rectangular slot saves exactly as before.
+#[test]
+fn an_unknown_bend_relief_shape_is_refused() {
+    let mut s = Session::default();
+    setback_sheet(&mut s);
+    run(&mut s, "sheet.flange", json!({"edges": [[0, 50, 2]], "height": 40, "start_setback": "10 mm"}));
+    let (v0, rule) = (volume(&mut s), s.doc.sheet.clone());
+    for wrong in [json!("notch"), json!("tear"), json!("obround"), json!(""), json!(2), json!(true)] {
+        let e = s.execute("sheet.manage_rules", &json!({"name": "Demo", "bend_relief_shape": wrong})).map(|_| ()).unwrap_err().to_string();
+        assert!(e.contains("`bend_relief_shape` must be rectangular or round"), "{wrong}: {e}");
+        assert!(s.doc.sheet == rule && volume(&mut s) == v0, "{wrong}: the design is as it was");
+    }
+    let features = s.doc.features.len();
+    let e = s.execute("sheet.flange", &json!({"edges": [[150, 50, 2]], "height": 20, "bend_relief_shape": "round"})).map(|_| ()).unwrap_err();
+    assert!(e.to_string().contains("bend_relief_shape"), "{e}");
+    assert_eq!(s.doc.features.len(), features);
+    // Rectangular is not written: the design reads back as it was saved.
+    let saved = s.doc.to_json();
+    assert!(!saved.contains("bend_relief_shape"), "{saved}");
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&saved).unwrap());
+    assert_eq!(reopened.doc.sheet_rule(None).bend_relief_shape, "rectangular");
+    assert!(rel(volume(&mut reopened), v0) < 1e-9);
+    run(&mut s, "sheet.manage_rules", json!({"name": "Demo", "bend_relief_shape": "round"}));
+    assert!(s.doc.to_json().contains("bend_relief_shape"));
+}

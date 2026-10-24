@@ -418,6 +418,59 @@ fn rules_dialog_picks_the_corner_relief_shape() {
     }
 }
 
+/// The rule manager's bend relief shape: a flange set back from both ends of its edge has a
+/// relief slot beside each end of its bend; the shape the dialog picks reaches the rule, and the
+/// slots' ends in the base (a half round each for `round`, square for `rectangular`).
+#[test]
+fn rules_dialog_picks_the_bend_relief_shape() {
+    for mode in [crate::shell::LayoutMode::Floating, crate::shell::LayoutMode::Docked] {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.set", json!({"layout":mode}));
+        h.app.run("sheet.manage_rules", json!({"name": "AL2", "thickness": "2 mm", "bend_radius": "2 mm", "active": true})).unwrap();
+        h.app.run("sketch.create", json!({"plane": "XY", "name": "Base"})).unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [150, 100]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+        h.app.run("sheet.flange", json!({"edges": [[0, 50, 2]], "height": 40, "start_setback": "10 mm", "end_setback": "20 mm"})).unwrap();
+        // The base's outline: its arcs, and how many segments it has.
+        let base = |app: &SolveApp| {
+            let state = app.session.model.state();
+            state.sheets.last().map(|s| {
+                let arcs = s.base.outer.segs.iter().filter(|g| matches!(g, solidcraft_engine::geom::Seg2::Arc { .. })).count();
+                (arcs, s.base.outer.segs.len())
+            })
+        };
+        let shown = |app: &SolveApp| match app.dialog.as_ref().map(|d| &d.kind) {
+            Some(Kind::Sheet(Sm::Rules { bend_relief, .. })) => Some(*bend_relief),
+            _ => None,
+        };
+        let (arcs, slotted) = base(&h.app).expect("the sheet");
+        assert_eq!(arcs, 0, "the rectangular slots are square");
+        h.step(&json!({"start": "sheet.manage_rules"})).unwrap();
+        h.frames(3);
+        assert_eq!(shown(&h.app), Some(0), "a rule starts with the rectangular slot");
+        h.step(&json!({"click": {"handle": "dialog:Bend Relief Shape"}})).unwrap();
+        h.step(&json!({"click": {"handle": "dialog:Bend Relief Shape:Round"}})).unwrap();
+        assert_eq!(shown(&h.app), Some(1));
+        h.step(&json!({"widget": "OK"})).unwrap();
+        assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+        assert_eq!(h.app.session.doc.sheet_rule(None).bend_relief_shape, "round");
+        assert_eq!(h.app.session.doc.sheet_rule(None).corner_relief_shape, "notch", "the corner relief is left alone");
+        // Each slot's square end, two corners and the line between, is a half round.
+        assert_eq!(base(&h.app), Some((2, slotted - 2)), "a half round at the end of each slot");
+        h.step(&json!({"start": "sheet.manage_rules"})).unwrap();
+        h.frames(3);
+        assert_eq!(shown(&h.app), Some(1), "the dialog shows the rule's shape");
+        h.step(&json!({"click": {"handle": "dialog:Bend Relief Shape"}})).unwrap();
+        h.step(&json!({"click": {"handle": "dialog:Bend Relief Shape:Rectangular"}})).unwrap();
+        assert_eq!(shown(&h.app), Some(0));
+        h.step(&json!({"widget": "OK"})).unwrap();
+        assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+        assert_eq!(h.app.session.doc.sheet_rule(None).bend_relief_shape, "rectangular");
+        assert_eq!(base(&h.app), Some((0, slotted)), "the square slots are back");
+    }
+}
+
 /// The rule manager's rectangular relief, on a base whose corners are not square: the shape and
 /// the size the dialog shows reach the part, the bends and the flat pattern.
 #[test]

@@ -253,6 +253,11 @@ pub struct SheetRule {
     /// end is cut straight from that corner to where its flange's end starts).
     #[serde(default = "rule_corner_relief_shape")]
     pub corner_relief_shape: String,
+    /// The bend relief's shape where a flange's bend ends beside more of the sheet:
+    /// `rectangular` (a slot `relief_width` wide, square at its end in the panel) or `round` (the
+    /// same slot with a half-round end). Left out of a saved rule while it is rectangular.
+    #[serde(default = "rule_bend_relief_shape", skip_serializing_if = "is_rectangular_bend_relief")]
+    pub bend_relief_shape: String,
     /// Inner radius of flat hems.
     #[serde(default = "rule_hem_gap")]
     pub hem_gap: String,
@@ -277,6 +282,12 @@ fn rule_corner_relief() -> String {
 fn rule_corner_relief_shape() -> String {
     ReliefShape::Notch.name().into()
 }
+fn rule_bend_relief_shape() -> String {
+    BendReliefShape::Rectangular.name().into()
+}
+fn is_rectangular_bend_relief(s: &str) -> bool {
+    BendReliefShape::parse(s) == Some(BendReliefShape::Rectangular)
+}
 fn rule_hem_gap() -> String {
     "0.01 mm".into()
 }
@@ -293,6 +304,7 @@ impl SheetRule {
             relief_depth: rule_relief_depth(),
             corner_relief: rule_corner_relief(),
             corner_relief_shape: rule_corner_relief_shape(),
+            bend_relief_shape: rule_bend_relief_shape(),
             hem_gap: rule_hem_gap(),
             gap: rule_gap(),
         }
@@ -353,6 +365,42 @@ impl ReliefShape {
     }
 }
 
+/// The shape of the bend relief cut where a flange's bend ends beside more of the panel it
+/// stands on (a rule's `bend_relief_shape`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BendReliefShape {
+    /// A slot `relief_width` wide, square at its end in the panel.
+    #[default]
+    Rectangular,
+    /// The same slot with a half-round end in the panel (radius `relief_width / 2`), so that it
+    /// has no sharp inner corners. The round reaches `relief_depth` before the bend line, or
+    /// `relief_width / 2` where that is deeper, so that the slot's straight sides always reach
+    /// the bend line.
+    Round,
+}
+
+impl BendReliefShape {
+    pub fn parse(s: &str) -> Option<BendReliefShape> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "rectangular" => Some(BendReliefShape::Rectangular),
+            "round" => Some(BendReliefShape::Round),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BendReliefShape::Rectangular => "rectangular",
+            BendReliefShape::Round => "round",
+        }
+    }
+
+    fn is_rectangular(&self) -> bool {
+        *self == BendReliefShape::Rectangular
+    }
+}
+
 /// The corner relief an edge flange feature asks for in place of the rule's. A value left out
 /// follows the rule.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -372,6 +420,7 @@ pub struct RuleValues {
     pub relief_depth: f64,
     pub corner_relief: f64,
     pub corner_relief_shape: ReliefShape,
+    pub bend_relief_shape: BendReliefShape,
     pub hem_gap: f64,
     pub gap: f64,
 }
@@ -407,6 +456,8 @@ impl Document {
             corner_relief_shape: ReliefShape::parse(&r.corner_relief_shape).ok_or_else(|| {
                 DocError::Invalid(format!("unknown corner relief shape `{}` (notch, round, rectangular or tear)", r.corner_relief_shape))
             })?,
+            bend_relief_shape: BendReliefShape::parse(&r.bend_relief_shape)
+                .ok_or_else(|| DocError::Invalid(format!("unknown bend relief shape `{}` (rectangular or round)", r.bend_relief_shape)))?,
             hem_gap: with_t(&r.hem_gap, Kind::Length)?,
             gap: with_t(&r.gap, Kind::Length)?,
         };
@@ -515,6 +566,9 @@ pub struct SheetBody {
     /// The rule's bend relief (`relief_width`, `relief_depth`), cut into the base where a
     /// flange's bend ends beside more of the base.
     pub bend_relief: (f64, f64),
+    /// The rule's bend relief shape (`bend_relief_shape`).
+    #[serde(default, skip_serializing_if = "BendReliefShape::is_rectangular")]
+    pub bend_relief_shape: BendReliefShape,
     /// The base sketch's lines (id, ends in flat coordinates), naming the base panel's edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub base_curves: Vec<(String, Vec2, Vec2)>,
@@ -683,6 +737,30 @@ fn rect(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Region2 {
         lp = lp.reversed();
     }
     Region2 { outer: lp, holes: Vec::new() }
+}
+
+/// The rectangle `a b c d` (a, b its end, d and c the other end's corners on the same sides)
+/// with its end `a b` rounded: a half circle across it, `|ab|` across, touching the line `a b`
+/// in its middle.
+fn obround_end(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Region2 {
+    let r = a.dist(b) / 2.0;
+    let mid = (a + b) * 0.5;
+    let Some(inward) = (d - a).normalized() else { return rect(a, b, c, d) };
+    let center = mid + inward * r;
+    let (start_a, end_b) = (a + inward * r, b + inward * r);
+    // The half circle from beside `a` round through `mid` to beside `b`: counter-clockwise when
+    // `mid` lies to the left of the way from `start_a` round to it.
+    let from = start_a - center;
+    let sweep = if from.cross(mid - center) > 0.0 { std::f64::consts::PI } else { -std::f64::consts::PI };
+    let lp = Loop2 {
+        segs: vec![
+            Seg2::Line { a: d, b: start_a },
+            Seg2::Arc { center, radius: r, start: from.angle(), sweep },
+            Seg2::Line { a: end_b, b: c },
+            Seg2::Line { a: c, b: d },
+        ],
+    };
+    Region2 { outer: lp.ccw(), holes: Vec::new() }
 }
 
 /// Round to a 1e-9 mm grid (keeps trimmed edges exactly where the kernel expects them).
@@ -2532,8 +2610,13 @@ impl SheetBody {
     /// parent flange's panel runs on past it), cut the rule's bend relief into that panel there: a
     /// slot `relief_width` wide beside the bend's end, from `relief_depth` before the bend line to
     /// `relief_width` past the flange's far edge in the flat pattern, so that the bend and the
-    /// flange come free of it, folded and flat. An end that a cut-out has freed already (`free`:
-    /// start, end) gets none. Returns a note for every other such end left as it is.
+    /// flange come free of it, folded and flat. The rule's `bend_relief_shape` says how the slot
+    /// ends in the panel: square (`rectangular`), or with a half round `relief_width` across
+    /// (`round`: the round touches the line of the square end, or, where `relief_depth` is less
+    /// than half the width, reaches half the width before the bend line, so that the slot's
+    /// straight sides always reach the bend line and nothing of the panel stays on the bend's
+    /// end). An end that a cut-out has freed already (`free`: start, end) gets none. Returns a
+    /// note for every other such end left as it is.
     fn relieve_bend_ends(&mut self, i: usize, free: (bool, bool)) -> Vec<String> {
         let Some(f) = self.flanges.get(i).cloned() else { return Vec::new() };
         // The panel the relief is cut into: the base, or the panel of the flange this one stands on.
@@ -2560,7 +2643,13 @@ impl SheetBody {
             } else if !panel.contains(at(width + 1e-4, 1e-4)) {
                 Err(format!("a relief {width:.3} mm wide would take away all of the material beside the bend"))
             } else {
-                let relief = rect(at(0.0, -depth), at(width, -depth), at(width, reach + width), at(0.0, reach + width));
+                let relief = match self.bend_relief_shape {
+                    BendReliefShape::Round => {
+                        let deep = depth.max(width / 2.0);
+                        obround_end(at(0.0, -deep), at(width, -deep), at(width, reach + width), at(0.0, reach + width))
+                    }
+                    BendReliefShape::Rectangular => rect(at(0.0, -depth), at(width, -depth), at(width, reach + width), at(0.0, reach + width)),
+                };
                 planar_region(&panel)
                     .and_then(|region| material_boolean(&[region], &[relief], kernel::BoolOp::Cut, &mut FlatWork::new()))
                     .map_err(|e| e.to_string())
@@ -4538,6 +4627,7 @@ pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region
         relief: rv.corner_relief_shape,
         relief_size: rv.corner_relief,
         bend_relief: (rv.relief_width, rv.relief_depth),
+        bend_relief_shape: rv.bend_relief_shape,
         base_curves: Vec::new(),
         altered_by: None,
     }
@@ -4597,6 +4687,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
         relief: rv.corner_relief_shape,
         relief_size: rv.corner_relief,
         bend_relief: (rv.relief_width, rv.relief_depth),
+        bend_relief_shape: rv.bend_relief_shape,
         base_curves: Vec::new(),
         altered_by: None,
     };
@@ -4720,6 +4811,7 @@ mod tests {
             relief_depth: 1.25,
             corner_relief: 10.0,
             corner_relief_shape: ReliefShape::Notch,
+            bend_relief_shape: BendReliefShape::Rectangular,
             hem_gap: 0.01,
             gap: 2.5,
         }
@@ -5272,6 +5364,7 @@ mod tests {
             relief_depth: 1.0,
             corner_relief: 8.0,
             corner_relief_shape: ReliefShape::Notch,
+            bend_relief_shape: BendReliefShape::Rectangular,
             hem_gap: 0.01,
             gap: 2.0,
         };
@@ -5367,6 +5460,7 @@ mod tests {
             relief_depth: 1.0,
             corner_relief: 8.0,
             corner_relief_shape: ReliefShape::Notch,
+            bend_relief_shape: BendReliefShape::Rectangular,
             hem_gap: 0.01,
             gap: 0.5,
         }
