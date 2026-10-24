@@ -444,7 +444,7 @@ fn rules_dialog_sets_how_bend_angles_read() {
         h.frames(3);
         assert_eq!(shown(&h.app), Some(0), "a rule starts with bend angles");
         h.step(&json!({"click": {"handle": "dialog:Angle Display"}})).unwrap();
-        h.step(&json!({"click": {"handle": "dialog:Angle Display:Included Angle"}})).unwrap();
+        h.step(&json!({"click": {"handle": "dialog:Angle Display:Included"}})).unwrap();
         assert_eq!(shown(&h.app), Some(1));
         h.step(&json!({"widget": "OK"})).unwrap();
         assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
@@ -455,7 +455,7 @@ fn rules_dialog_sets_how_bend_angles_read() {
         assert_eq!(shown(&h.app), Some(1), "the dialog shows the rule's display");
         // Back to bend angles; the rule's other values are as they were.
         h.step(&json!({"click": {"handle": "dialog:Angle Display"}})).unwrap();
-        h.step(&json!({"click": {"handle": "dialog:Angle Display:Bend Angle"}})).unwrap();
+        h.step(&json!({"click": {"handle": "dialog:Angle Display:Bend"}})).unwrap();
         h.step(&json!({"widget": "OK"})).unwrap();
         let rule = h.app.session.doc.sheet_rule(None);
         assert_eq!((rule.angle_display.as_str(), rule.thickness.as_str()), ("bend", "2 mm"));
