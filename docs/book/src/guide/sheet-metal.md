@@ -273,8 +273,8 @@ For a program that cuts every line it is given, `"bend_lines": false` leaves the
 A bend's angle is how far the sheet turns from flat. Many press brakes are set by the
 **included angle** instead: the angle left between the bend's two sides, 180° less the bend
 angle. A 90° bend is 90° either way, but a 58° bend is set as 122°. The rule's `angle_display`
-(Angle Display in Sheet Metal Rules) says which one the DXF's bend notes give: `bend` (Bend
-Angle, the default) or `included` (Included Angle). Under an `included` rule the note of a 58°
+(Angle Display in Sheet Metal Rules) says which one the DXF's bend notes give: `bend` (Bend,
+the default) or `included` (Included). Under an `included` rule the note of a 58°
 bend reads `B1 UP 122° R1`. The bend table gives both angles whatever the rule says, in columns
 of their own (`angle_deg` and `included_angle_deg`), so neither is taken for the other. The
 setting does not change the flange angle yet: `angle` in `sheet.flange` and in the Flange dialog
