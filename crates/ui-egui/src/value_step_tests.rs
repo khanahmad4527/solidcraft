@@ -108,17 +108,15 @@ impl Field {
                 crate::expression_complete::begin_frame(ui.ctx());
                 set_enabled(ui.ctx(), self.on);
                 crate::params_dialog::publish(&mut self.app, ui.ctx());
-                egui::CentralPanel::default().show(ui, |ui| {
-                    self.scroll = egui::ScrollArea::vertical()
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            let r = ui.add(egui::TextEdit::singleline(&mut self.text).id(self.id));
-                            self.changed = crate::params_dialog::complete(ui, &r, &mut self.text);
-                            self.rect = r.rect;
-                            ui.add_space(1000.0);
-                        })
-                        .id;
-                });
+                self.scroll = egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut self.text).id(self.id));
+                        self.changed = crate::params_dialog::complete(ui, &r, &mut self.text);
+                        self.rect = r.rect;
+                        ui.add_space(1000.0);
+                    })
+                    .id;
             },
         );
         out.textures_delta.clear();
