@@ -2751,7 +2751,7 @@ fn picked_side(app: &SolveApp, d: &Dialog, first: &Sel) -> Option<usize> {
     Some(crate::smart_extrude::picked_direction(crate::smart_extrude::view_ray(&app.cam, at), normal, false))
 }
 
-/// Show the sketch of the Extrude, Revolve or sheet metal base or contour flange the open dialog
+/// Show the sketch of the Extrude, Revolve, sheet metal base or contour flange or tab the open dialog
 /// edits, and only while it is open: whichever way the dialog closed (OK, Cancel, another tool,
 /// another design), the sketch returns to its own visibility.
 pub(crate) fn sync_feature_edit_sketch(app: &mut SolveApp) {
@@ -2759,7 +2759,8 @@ pub(crate) fn sync_feature_edit_sketch(app: &mut SolveApp) {
         FeatureKind::Extrude { sketch, .. }
         | FeatureKind::Revolve { sketch, .. }
         | FeatureKind::SheetBase { sketch, .. }
-        | FeatureKind::SheetContour { sketch, .. } => Some(**sketch),
+        | FeatureKind::SheetContour { sketch, .. }
+        | FeatureKind::SheetTab { sketch, .. } => Some(**sketch),
         _ => None,
     });
 }

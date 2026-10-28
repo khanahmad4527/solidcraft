@@ -222,6 +222,7 @@ settings_mouse	false
 settings_palette	false
 settings_plug	false
 sheet_rules	false
+sheet_tab	false
 shell	false
 shield	false
 silhouette	false
