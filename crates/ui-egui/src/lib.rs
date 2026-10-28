@@ -27,6 +27,7 @@ mod colour_vision_tests;
 pub mod command_help;
 pub mod context_menu;
 pub mod control;
+pub mod control_glide;
 pub mod control_job;
 pub mod crash_ui;
 pub mod deferred;
@@ -455,6 +456,9 @@ pub struct SolveApp {
     pub cam: Camera,
     /// A view change in progress (axis view, Home, Fit); any mouse navigation cancels it.
     pub cam_anim: Option<CameraAnim>,
+    /// Timed control-channel motion (`ui.camera`/`ui.move` with `seconds`, `ui.text` with
+    /// `interval`), stepped each frame and answered when done ([`control_glide`]).
+    pub glides: Vec<control_glide::Glide>,
     /// Seconds since start, as of this frame.
     pub now: f64,
     /// The history marker before Edit Sketch rolled the timeline to the sketch; Finish Sketch
@@ -693,6 +697,7 @@ impl SolveApp {
             shell: Default::default(),
             cam: Camera::default(),
             cam_anim: None,
+            glides: Vec::new(),
             now: 0.0,
             pre_sketch_marker: None,
             pre_sketch_cam: None,
@@ -2243,6 +2248,7 @@ impl SolveApp {
         self.drain_control(ctx);
         self.follow_view_request(true);
         agent_cursor::step(self, ctx);
+        control_glide::step(self, ctx);
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
@@ -2621,6 +2627,8 @@ impl SolveApp {
             control::Outcome::Done(v) => {
                 let _ = reply.send(v);
             }
+            // Answered by `control_glide::step` once the motion has played out.
+            control::Outcome::Gliding => control_glide::attach(self, &reply),
             // A window that is minimised or covered (another macOS Space) presents no frame:
             // say so at once rather than after the deadline (#1677).
             control::Outcome::Screenshot { .. } if window_hidden(ctx) => {

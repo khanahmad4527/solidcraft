@@ -281,7 +281,7 @@ impl Harness {
     pub fn settle(&mut self) {
         for _ in 0..2000 {
             // Queued input used up and the view no longer moving.
-            if self.app.synthetic.is_empty() && self.app.cam_anim.is_none() {
+            if self.app.synthetic.is_empty() && self.app.cam_anim.is_none() && self.app.glides.is_empty() {
                 break;
             }
             self.frame();
@@ -334,7 +334,7 @@ impl Harness {
         let (req, _rx) = ControlRequest::new(method, params);
         let out = match handle(&mut self.app, &self.ctx, &req) {
             Outcome::Done(v) => v,
-            Outcome::Screenshot { .. } => json!({"ok": true, "result": null}),
+            Outcome::Screenshot { .. } | Outcome::Gliding => json!({"ok": true, "result": null}),
         };
         self.settle();
         out

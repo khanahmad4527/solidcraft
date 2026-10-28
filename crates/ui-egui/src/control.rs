@@ -17,9 +17,16 @@
 //!   `ui.sketchToScreen {points: [[x,y]…]}` (screen points of active-sketch coordinates); `ui.editFeature {feature}` (edit dialog)
 //! - `ui.set {...UiState fields}`; `ui.view {view: front|back|top|bottom|left|right|iso|home|fit, animate?: bool}` (snaps unless animate)
 //! - `ui.start {command}`: like clicking the toolbar button (starts tools/dialogs)
-//! - `ui.click {x, y, button?, shift?}`, `ui.move {x, y}`: real
+//! - `ui.click {x, y, button?, shift?}`, `ui.move {x, y, seconds?}`: real
 //!   pointer input in screen points; `ui.scroll {x, y, delta}`: mouse-wheel input in
-//!   points (zooms); `ui.key {key, cmd?, shift?}`, `ui.text {text}`
+//!   points (zooms); `ui.key {key, cmd?, shift?}`, `ui.text {text, interval?}`
+//! - Timed motion ([`crate::control_glide`]): `ui.move` with `seconds` glides the pointer there
+//!   (smoothstep, a pointer move every frame, so widgets hover as it passes), `ui.camera` with
+//!   `seconds` glides the camera (each number interpolated as given, so a yaw 2π on turns a full
+//!   turn), `ui.text` with `interval` types one character every that many seconds. The window
+//!   renders every frame meanwhile and answers once the motion is done
+//!   (`{seconds, interrupted}`; `interrupted`: something else moved the camera, or a newer glide
+//!   of the same kind took over)
 //! - `ui.screenshot {path?}`: PNG of the window; `ui.render {path, width?, height?, grid?, axes?}`:
 //!   headless CPU render of the model with the current camera, in the window's theme, with the
 //!   section the viewport shows (no window needed); the ground grid and the origin's axes as the
@@ -167,7 +174,11 @@ pub(crate) fn publish_design(app: &mut SolveApp, watch: &DesignWatch) {
 
 pub enum Outcome {
     Done(Value),
-    Screenshot { path: Option<String> },
+    Screenshot {
+        path: Option<String>,
+    },
+    /// A timed motion started; the window answers when it is done ([`crate::control_glide`]).
+    Gliding,
 }
 
 fn ok(v: Value) -> Outcome {
@@ -659,7 +670,11 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             }
             ok(json!(app.cam))
         }
-        "ui.camera" => wrap(camera(app, p)),
+        "ui.camera" => match camera(app, p) {
+            Ok(Some(())) => Outcome::Gliding,
+            Ok(None) => ok(serde_json::to_value(app.cam).unwrap_or_default()),
+            Err(e) => err(e),
+        },
         "ui.palette" => {
             if p.get("open").and_then(Value::as_bool) == Some(false) {
                 app.ui.palette_open = false;
@@ -709,11 +724,25 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
                 return err("x/y must be within ±1000000 screen points");
             }
             let pos = egui::pos2(x as f32, y as f32);
+            let seconds = if method == "ui.move" {
+                match crate::control_glide::duration(p, "seconds") {
+                    Ok(s) => s,
+                    Err(e) => return err(e),
+                }
+            } else {
+                None
+            };
             let modifiers = if method == "ui.move" {
                 egui::Modifiers { shift: b("shift"), alt: b("alt"), ctrl: b("ctrl"), command: b("ctrl") || b("cmd"), mac_cmd: b("cmd") }
             } else {
                 egui::Modifiers::NONE
             };
+            if let Some(seconds) = seconds {
+                let from = crate::control_glide::pointer_now(app, ctx).unwrap_or(pos);
+                app.synthetic.push(egui::Event::ModifiersChanged(modifiers));
+                crate::control_glide::start(app, crate::control_glide::Motion::Pointer { from, to: pos }, seconds);
+                return Outcome::Gliding;
+            }
             app.synthetic.push(egui::Event::ModifiersChanged(modifiers));
             app.synthetic.push(egui::Event::PointerMoved(pos));
             if method == "ui.click" {
@@ -952,8 +981,23 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             ok(Value::Null)
         }
         "ui.text" => {
-            app.synthetic.push(egui::Event::Text(s("text").unwrap_or("").to_string()));
-            ok(Value::Null)
+            let text = s("text").unwrap_or("");
+            match crate::control_glide::duration(p, "interval") {
+                Ok(Some(interval)) if !text.is_empty() => {
+                    let chars: Vec<char> = text.chars().collect();
+                    let seconds = interval * chars.len() as f64;
+                    if seconds > crate::control_glide::MAX_SECONDS {
+                        return err(format!("typing would take over {} seconds", crate::control_glide::MAX_SECONDS));
+                    }
+                    crate::control_glide::start(app, crate::control_glide::Motion::Text { chars, interval, sent: 0 }, seconds);
+                    Outcome::Gliding
+                }
+                Ok(_) => {
+                    app.synthetic.push(egui::Event::Text(text.to_string()));
+                    ok(Value::Null)
+                }
+                Err(e) => err(e),
+            }
         }
         "ui.icon_audit" => {
             if b("reset") {
@@ -1104,14 +1148,18 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
 /// passed back sets the same view again. `fit`: frame the listed occurrences (ids or names;
 /// `root`: the bodies outside every component), or everything (`true`), keeping the direction;
 /// `false` frames nothing.
+/// `seconds`: glide there over that many seconds instead ([`crate::control_glide`]; not with
+/// `fit`), answered when it arrives (`Some(())`).
 /// Nothing changes when a field is refused.
-fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
-    const FIELDS: [&str; 8] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit"];
-    let o = match p {
+fn camera(app: &mut SolveApp, p: &Value) -> Result<Option<()>, String> {
+    const FIELDS: [&str; 9] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit", "seconds"];
+    let mut o = match p {
         Value::Null => serde_json::Map::new(),
         Value::Object(o) => o.clone(),
         _ => return Err("params must be an object".into()),
     };
+    let seconds = crate::control_glide::duration(p, "seconds")?;
+    o.remove("seconds");
     if let Some(k) = o.keys().find(|k| !FIELDS.contains(&k.as_str())) {
         return Err(format!("unknown camera field `{k}` (it takes {})", FIELDS.join(", ")));
     }
@@ -1156,17 +1204,25 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
     };
     // A read leaves a view change that is animating alone.
     if !sets && fit.is_none() {
-        return serde_json::to_value(app.cam).map_err(|e| e.to_string());
+        return Ok(None);
+    }
+    if seconds.is_some() && fit.is_some() {
+        return Err("`seconds` does not combine with `fit` (ui.view {view: fit, animate: true} glides to a fit)".into());
     }
     app.cancel_view_animation();
     app.viewport.orbit_free = None;
+    if let Some(seconds) = seconds {
+        let from = app.cam;
+        crate::control_glide::start(app, crate::control_glide::Motion::Camera { from, to: cam, last: from }, seconds);
+        return Ok(Some(()));
+    }
     app.cam = cam;
     match fit {
         Some(None) => app.fit_view(),
         Some(Some(b)) => app.fit_bounds(b),
         None => {}
     }
-    serde_json::to_value(app.cam).map_err(|e| e.to_string())
+    Ok(None)
 }
 
 /// An occurrence by id or name (or a component's name: its first occurrence); 0 is the root.
@@ -1244,6 +1300,54 @@ mod tests {
         assert!(h.ctx.input(|i| i.modifiers.is_none()));
         assert!(h.app.session.selection.is_empty());
         assert!(h.app.viewport.boxsel.is_none());
+    }
+
+    /// `seconds` and `interval`: the window plays the motion out frame by frame and answers
+    /// when it has arrived; a yaw past 2π turns past a full turn.
+    #[test]
+    fn timed_camera_and_pointer_answer_when_done() {
+        let mut h = crate::scenario::Harness::new();
+        let before = h.app.cam;
+        let yaw = before.yaw + std::f64::consts::TAU;
+        let (r, frames) = h.call_queued("ui.camera", json!({"yaw": yaw, "seconds": 0.5}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["interrupted"], false, "{r}");
+        assert!((28..=34).contains(&frames), "a half-second glide took {frames} frames");
+        assert!((h.app.cam.yaw - yaw).abs() < 1e-9, "{} vs {yaw}", h.app.cam.yaw);
+        assert!(h.app.glides.is_empty());
+
+        h.call("ui.move", json!({"x": 100, "y": 100}));
+        let (r, frames) = h.call_queued("ui.move", json!({"x": 400, "y": 300, "seconds": 0.25}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!((13..=19).contains(&frames), "a quarter-second glide took {frames} frames");
+        assert_eq!(h.ctx.input(|i| i.pointer.latest_pos()), Some(egui::pos2(400.0, 300.0)));
+
+        let (r, _) = h.call_queued("ui.camera", json!({"fit": true, "seconds": 1}));
+        assert_eq!(r["ok"], false, "{r}");
+        let (r, _) = h.call_queued("ui.move", json!({"x": 1, "y": 1, "seconds": -1}));
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(h.ctx.input(|i| i.pointer.latest_pos()), Some(egui::pos2(400.0, 300.0)));
+    }
+
+    #[test]
+    fn timed_text_types_one_character_at_a_time() {
+        let mut app = SolveApp::new(Session::default(), Services::default());
+        let ctx = crate::fonts::test_context();
+        let (req, _) = ControlRequest::new("ui.text", json!({"text": "abc", "interval": 0.1}));
+        assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Gliding));
+        let mut typed = String::new();
+        for now in [0.0, 0.05, 0.1, 0.15, 0.2, 0.3] {
+            app.now = now;
+            crate::control_glide::step(&mut app, &ctx);
+            for e in app.synthetic.drain(..) {
+                if let egui::Event::Text(t) = e {
+                    typed.push_str(&t);
+                }
+            }
+            let expect = ((now / 0.1 + 1e-9).floor() as usize + 1).min(3);
+            assert_eq!(typed.len(), expect, "at {now}s");
+        }
+        assert!(app.glides.is_empty());
     }
 
     #[test]
@@ -1408,7 +1512,7 @@ mod tests {
         let (req, _rx) = ControlRequest::new("ui.render", json!({"path": path.to_string_lossy(), "width": 200, "height": 140}));
         match handle(app, &crate::fonts::test_context(), &req) {
             Outcome::Done(v) => assert_eq!(v["ok"], true, "{v}"),
-            Outcome::Screenshot { .. } => panic!("ui.render took a screenshot"),
+            Outcome::Screenshot { .. } | Outcome::Gliding => panic!("ui.render took a screenshot or glided"),
         }
         std::fs::read(path).unwrap()
     }
@@ -1512,7 +1616,7 @@ mod tests {
                 assert_eq!(v["ok"], true, "{v}");
                 v["result"]["renderer"].as_str().or(v["renderer"].as_str()).unwrap_or("unknown").to_string()
             }
-            Outcome::Screenshot { .. } => panic!("ui.render took a screenshot"),
+            Outcome::Screenshot { .. } | Outcome::Gliding => panic!("ui.render took a screenshot or glided"),
         };
         (std::fs::read(path).unwrap(), renderer)
     }
@@ -1893,6 +1997,7 @@ mod tests {
             match handle(&mut app, &crate::fonts::test_context(), &req) {
                 Outcome::Done(v) => v,
                 Outcome::Screenshot { path } => json!({"ok": true, "screenshot": path}),
+                Outcome::Gliding => json!({"ok": true, "gliding": true}),
             }
         };
         let export = |p: String| json!({"command": "file.export", "params": {"path": p}});
@@ -2014,7 +2119,7 @@ mod tests {
             let (req, _rx) = ControlRequest::new(method, params);
             match handle(&mut h.app, &h.ctx, &req) {
                 Outcome::Done(v) => v,
-                Outcome::Screenshot { .. } => Value::Null,
+                Outcome::Screenshot { .. } | Outcome::Gliding => Value::Null,
             }
         }
         raw(&mut h, "ui.view", json!({"view": "top", "animate": true}));
