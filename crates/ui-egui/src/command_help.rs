@@ -14,6 +14,7 @@ pub const DOCUMENTED: &[&str] = &[
     "material.assign",
     "parameters.change",
     "pointcloud.insert",
+    "sketch.equation_curve",
     "solid.align",
     "solid.chamfer",
     "solid.combine",
