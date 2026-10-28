@@ -662,6 +662,45 @@ pub(super) fn sheet_eval(
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }
+        FeatureKind::SheetTab { sketch, profiles, body } => {
+            let ss = st.sketch(sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?.clone();
+            let regions = solidcraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
+            // The sketch's lines name the base's new edges (`T<feature>.<line>`).
+            let lines: Vec<(String, Vec2, Vec2)> = ss
+                .sketch
+                .curves
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !c.construction)
+                .flat_map(|(ci, c)| {
+                    ss.sketch.segs(ci).into_iter().filter_map(move |sg| match sg {
+                        Seg2::Line { a, b } => Some((format!("T{}.{}", f.id, c.id), a, b)),
+                        _ => None,
+                    })
+                })
+                .collect();
+            // The named body, else the first sheet with a face in the sketch's plane that takes it.
+            let candidates: Vec<usize> = match body {
+                Some(_) => vec![sheet_for(st, body, None)?],
+                None => (0..st.sheets.len()).filter(|&i| st.sheets.get(i).is_some_and(|sh| !sh.level_panels(&ss.plane).is_empty())).collect(),
+            };
+            let mut first_error = None;
+            for i in candidates {
+                let Some(mut sh) = st.sheets.get(i).cloned() else { continue };
+                match sh.add_tab(&ss.plane, &regions, &lines) {
+                    Ok(_) => {
+                        if let Some(slot) = st.sheets.get_mut(i) {
+                            *slot = sh;
+                        }
+                        return rebuild_sheet(st, i);
+                    }
+                    Err(e) => {
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+            Err(first_error.unwrap_or_else(|| DocError::Invalid(sheet::TAB_OFF_SHEET.into())))
+        }
         FeatureKind::SheetPerforate { diameter, pitch, margin, pattern, body } => {
             // Without a body name the field goes on the newest sheet, as the command's own body lookup does.
             let i = match body {

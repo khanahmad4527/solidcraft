@@ -20,9 +20,12 @@ use crate::{DocError, Document, IDENTITY, Mat, Result, apply_point, apply_vector
 mod convert;
 #[path = "sheet_face_names.rs"]
 mod face_names;
+#[path = "sheet_tab.rs"]
+mod tab;
 pub use convert::{bend_edge_names, convert_body};
 pub(crate) use convert::{outline_loop, round_wall};
 pub use face_names::body_sheet_face_names;
+pub use tab::{TAB_ADDS_NOTHING, TAB_APART, TAB_IN_BEND, TAB_OFF_SHEET, TAB_OVERLAPS};
 
 // Bound the aggregate geometry, including sampled curves and intermediate clipping pieces.
 // These are work limits, never geometry truncation: a larger input returns a useful error.
@@ -8626,5 +8629,189 @@ mod tests {
         let material = after.flat_material().unwrap();
         assert_eq!(material.len(), 2);
         assert!(after.parted_from_base(&material, &two).unwrap().is_empty());
+    }
+
+    // ---- Tab (#8325) ----
+
+    /// A rectangle in some plane's coordinates.
+    fn square(a: Vec2, b: Vec2) -> Region2 {
+        rect(a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y))
+    }
+
+    /// A rectangle on flange `i`'s panel, flat coordinates: `u` along its bend from the bend's
+    /// start, `v` out from the bend line.
+    fn on_flange(s: &SheetBody, i: usize, u: (f64, f64), v: (f64, f64)) -> Region2 {
+        let f = &s.flanges[i];
+        let at = |u: f64, v: f64| f.p + f.d * u + f.n * v;
+        rect(at(u.0, v.0), at(u.1, v.0), at(u.1, v.1), at(u.0, v.1))
+    }
+
+    #[test]
+    fn a_tab_joins_its_panel_into_one_outline_on_either_face() {
+        // The issue's example: a 40 x 40 profile over the long edge of a 100 x 60 sheet by 10 mm.
+        let top = plate(100.0, 60.0).panel_face("base:top").unwrap();
+        let bottom = plate(100.0, 60.0).panel_face("base:bottom").unwrap();
+        let level = Plane::new(Vec3::new(-20.0, 7.0, 2.5), Vec3::X, Vec3::Y).unwrap();
+        for (plane, profile) in [
+            (top, square(Vec2::new(30.0, 50.0), Vec2::new(70.0, 90.0))),
+            // The bottom face's coordinates are the flat pattern's mirrored in y.
+            (bottom, square(Vec2::new(30.0, -90.0), Vec2::new(70.0, -50.0))),
+            // A plane level with the top face, not the face itself.
+            (level, square(Vec2::new(50.0, 43.0), Vec2::new(90.0, 83.0))),
+        ] {
+            let mut s = plate(100.0, 60.0);
+            let lines = vec![("T9.l3".to_string(), Vec2::new(70.0, 90.0), Vec2::new(30.0, 90.0))];
+            assert_eq!(s.add_tab(&plane, &[profile], &lines).unwrap(), None, "the base panel");
+            // One outline: the base and the 40 x 30 tab past its edge.
+            assert!((s.base.area().abs() - (6000.0 + 1200.0)).abs() < 1e-6, "{}", s.base.area());
+            let flat = s.flat_regions().unwrap();
+            assert_eq!(flat.len(), 1, "one flat piece");
+            assert!((flat_area(&s) - 7200.0).abs() < 1e-6);
+            assert_eq!(s.flat_size().unwrap(), (100.0, 90.0));
+            let b = s.solid().unwrap();
+            assert!((vol(&b) - 7200.0 * 2.5).abs() < 1e-6, "{}", vol(&b));
+            assert!(s.holes.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_tabs_edges_take_a_flange_and_a_name() {
+        let mut s = plate(100.0, 60.0);
+        let top = s.panel_face("base:top").unwrap();
+        let lines = vec![("T9.l3".to_string(), Vec2::new(70.0, 90.0), Vec2::new(30.0, 90.0))];
+        s.add_tab(&top, &[square(Vec2::new(30.0, 50.0), Vec2::new(70.0, 90.0))], &lines).unwrap();
+        // The tab's far edge is named by the tab sketch's line, the base's edges keep theirs.
+        assert_eq!(s.edge_name(Vec3::new(50.0, 90.0, 2.5)).as_deref(), Some("base:T9.l3:top"));
+        // A flange on the tab's far edge: one sheet, unfolding in one piece.
+        let before = flat_area(&s);
+        let i = s.add_flange(Vec3::new(50.0, 90.0, 2.5), 15.0, std::f64::consts::FRAC_PI_2, 2.5, "inside", false).unwrap();
+        assert!((s.flanges[i].len - 40.0).abs() < 1e-9, "as long as the tab's edge");
+        assert_eq!(s.flat_regions().unwrap().len(), 1);
+        assert!(flat_area(&s) > before + 40.0 * 10.0);
+        assert!(s.solid().is_ok());
+    }
+
+    #[test]
+    fn a_tab_on_a_folded_wall_folds_with_it() {
+        let mut s = plate(100.0, 60.0);
+        s.add_flange(Vec3::new(50.0, 0.0, 2.5), 20.0, std::f64::consts::FRAC_PI_2, 2.5, "inside", false).unwrap();
+        let (ba, leg, len) = (s.allowance(&s.flanges[0]), s.flanges[0].leg, s.flanges[0].len);
+        let before_flat = flat_area(&s);
+        let before = vol(&s.solid().unwrap());
+        // A 20 x 10 lug over the wall's far edge, drawn on the wall's outer face: that face's
+        // coordinates are the wall's flat ones.
+        let wall = s.panel_face_plane(&s.world(Some(0)), true).unwrap();
+        let lug = on_flange(&s, 0, (40.0, 60.0), (ba + leg - 5.0, ba + leg + 10.0));
+        assert_eq!(s.add_tab(&wall, &[lug], &[]).unwrap(), Some(0));
+        assert!(s.flanges[0].shape.is_some(), "the wall's outline now carries the lug");
+        assert_eq!(s.flat_regions().unwrap().len(), 1, "one flat piece");
+        assert!((flat_area(&s) - before_flat - 200.0).abs() < 1e-6, "{}", flat_area(&s) - before_flat);
+        let after = vol(&s.solid().unwrap());
+        assert!((after - before - 200.0 * 2.5).abs() < 1e-3, "{}", after - before);
+        // Folded, the lug stands on the wall: above the wall's top, in its plane.
+        let tip = apply_point(&s.world(Some(0)), Vec3::new(50.0, 0.0, 0.0) + v3(s.flanges[0].n) * (ba + leg + 10.0));
+        let top = apply_point(&s.world(Some(0)), Vec3::new(50.0, 0.0, 0.0) + v3(s.flanges[0].n) * (ba + leg));
+        assert!(tip.z > top.z + 9.9 && (tip.y - top.y).abs() < 1e-9, "{tip:?} {top:?}");
+        assert!(len > 0.0);
+    }
+
+    #[test]
+    fn tabs_that_cannot_join_are_refused_and_change_nothing() {
+        let refused = |s: &SheetBody, plane: &Plane, profile: Region2, want: &str| {
+            let mut t = s.clone();
+            match t.add_tab(plane, &[profile], &[]) {
+                Err(DocError::Invalid(m)) => assert_eq!(m, want),
+                other => panic!("{other:?}, wanted {want}"),
+            }
+            assert_eq!(&t, s, "a refused tab leaves the sheet as it was");
+        };
+        let s = plate(100.0, 60.0);
+        let top = s.panel_face("base:top").unwrap();
+        // Not on a face of the sheet: above it, or square to it.
+        let above = Plane::new(Vec3::new(0.0, 0.0, 10.0), Vec3::X, Vec3::Y).unwrap();
+        refused(&s, &above, square(Vec2::new(30.0, 50.0), Vec2::new(70.0, 90.0)), TAB_OFF_SHEET);
+        let across = Plane::new(Vec3::ZERO, Vec3::X, Vec3::Z).unwrap();
+        refused(&s, &across, square(Vec2::new(30.0, 0.0), Vec2::new(70.0, 10.0)), TAB_OFF_SHEET);
+        // Apart from the outline, or meeting it at a corner only.
+        refused(&s, &top, square(Vec2::new(30.0, 70.0), Vec2::new(70.0, 90.0)), TAB_APART);
+        refused(&s, &top, square(Vec2::new(100.0, 60.0), Vec2::new(120.0, 80.0)), TAB_APART);
+        // Inside the face already.
+        refused(&s, &top, square(Vec2::new(10.0, 10.0), Vec2::new(20.0, 20.0)), TAB_ADDS_NOTHING);
+        // Drawn from the edge out (sharing the edge) is a tab.
+        let mut t = s.clone();
+        assert!(t.add_tab(&top, &[square(Vec2::new(30.0, 60.0), Vec2::new(70.0, 90.0))], &[]).is_ok());
+        assert!((t.base.area().abs() - 7200.0).abs() < 1e-6);
+        // Into a bend zone.
+        let mut f = plate(100.0, 60.0);
+        f.add_flange(Vec3::new(50.0, 0.0, 2.5), 20.0, std::f64::consts::FRAC_PI_2, 2.5, "inside", false).unwrap();
+        let top = f.panel_face("base:top").unwrap();
+        refused(&f, &top, square(Vec2::new(30.0, -3.0), Vec2::new(70.0, 10.0)), TAB_IN_BEND);
+        // Beside the bend, past the base's end: fine.
+        let mut g = f.clone();
+        assert!(g.add_tab(&top, &[square(Vec2::new(90.0, 10.0), Vec2::new(115.0, 30.0))], &[]).is_ok());
+        // Unfolded.
+        let mut flat = s.clone();
+        flat.flat = true;
+        let top = s.panel_face("base:top").unwrap();
+        match flat.clone().add_tab(&top, &[square(Vec2::new(30.0, 50.0), Vec2::new(70.0, 90.0))], &[]) {
+            Err(DocError::Invalid(m)) => assert!(m.contains("refold"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tab_that_would_overlap_another_panel_is_refused() {
+        // A C channel over the base: a 30 mm wall up from the y = 0 edge, a lip over the base, and
+        // a short wall down from the lip, its far edge 20 mm above the base. A lug on that short
+        // wall reaching 25 mm further down goes through the base once folded; clear in the flat.
+        let q = std::f64::consts::FRAC_PI_2;
+        let mut s = plate(100.0, 60.0);
+        s.add_flange(Vec3::new(50.0, 0.0, 2.5), 30.0, q, 2.5, "inside", false).unwrap();
+        for i in 0..2 {
+            let pick = s.far_edge_pick(i).unwrap();
+            s.add_flange(pick, if i == 0 { 20.0 } else { 10.0 }, q, 2.5, "inside", false).unwrap();
+        }
+        let (ba, leg) = (s.allowance(&s.flanges[2]), s.flanges[2].leg);
+        let wall = s.panel_face_plane(&s.world(Some(2)), true).unwrap();
+        let mut t = s.clone();
+        let through = on_flange(&s, 2, (40.0, 60.0), (ba + leg - 2.0, ba + leg + 25.0));
+        match t.add_tab(&wall, &[through], &[]) {
+            Err(DocError::Invalid(m)) => assert_eq!(m, TAB_OVERLAPS),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(t, s);
+        // The same lug kept clear of the base joins the wall.
+        let clear = on_flange(&s, 2, (40.0, 60.0), (ba + leg - 2.0, ba + leg + 10.0));
+        assert_eq!(t.add_tab(&wall, &[clear], &[]).unwrap(), Some(2));
+        assert_eq!(t.flat_regions().unwrap().len(), 1);
+        assert!(t.solid().is_ok());
+        // A lug on the base that would lie in the first wall's bend in the flat pattern.
+        let top = s.panel_face("base:top").unwrap();
+        let mut t = s.clone();
+        match t.add_tab(&top, &[square(Vec2::new(-10.0, -30.0), Vec2::new(5.0, 10.0))], &[]) {
+            Err(DocError::Invalid(m)) => assert!(m == TAB_IN_BEND || m == TAB_OVERLAPS, "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn hostile_tabs_never_panic() {
+        let s = plate(100.0, 60.0);
+        let top = s.panel_face("base:top").unwrap();
+        let nan = Vec2::new(f64::NAN, 1.0);
+        let huge = Vec2::new(1e300, 1e300);
+        for profile in [
+            square(nan, Vec2::new(70.0, 90.0)),
+            square(Vec2::new(30.0, 50.0), huge),
+            square(Vec2::new(-1e300, -1e300), huge),
+            square(Vec2::new(30.0, 50.0), Vec2::new(30.0, 50.0)),
+            Region2 { outer: Loop2 { segs: Vec::new() }, holes: Vec::new() },
+            Region2 { outer: Loop2::circle(Vec2::new(50.0, 60.0), f64::INFINITY), holes: Vec::new() },
+        ] {
+            let _ = s.clone().add_tab(&top, &[profile], &[]);
+        }
+        assert!(s.clone().add_tab(&top, &[], &[]).is_err());
+        let odd = Plane { origin: Vec3::new(f64::NAN, 0.0, 0.0), x: Vec3::X, y: Vec3::Y };
+        let _ = s.clone().add_tab(&odd, &[square(Vec2::new(30.0, 50.0), Vec2::new(70.0, 90.0))], &[]);
     }
 }
