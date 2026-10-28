@@ -12,6 +12,7 @@ pub const DOCUMENTED: &[&str] = &[
     "face.delete",
     "material.assign",
     "parameters.change",
+    "sheet.cross_break",
     "solid.align",
     "solid.chamfer",
     "solid.combine",

@@ -5215,6 +5215,119 @@ fn perforate_supports_a_square_pattern_and_refuses_impossible_values() {
     }
 }
 
+/// The LINE entities of a DXF on `layer`: (x1, y1, x2, y2).
+fn dxf_lines_on(dxf: &str, layer: &str) -> Vec<[f64; 4]> {
+    let lines: Vec<&str> = dxf.lines().map(str::trim).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < lines.len() {
+        if lines[i] == "0" && lines[i + 1] == "LINE" {
+            let (mut on, mut p) = ("", [0.0; 4]);
+            let mut j = i + 2;
+            while j + 1 < lines.len() && lines[j] != "0" {
+                let v = lines[j + 1].parse().unwrap_or(f64::NAN);
+                match lines[j] {
+                    "8" => on = lines[j + 1],
+                    "10" => p[0] = v,
+                    "20" => p[1] = v,
+                    "11" => p[2] = v,
+                    "21" => p[3] = v,
+                    _ => {}
+                }
+                j += 2;
+            }
+            if on == layer {
+                out.push(p);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The cross breaks of the flat pattern's listing: (direction, [x1, y1, x2, y2] of each crease).
+fn cross_break_lines(f: &Value) -> Vec<(String, Vec<[f64; 4]>)> {
+    let n = |v: &Value| v.as_f64().unwrap_or(f64::NAN);
+    f["cross_breaks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| {
+            let lines = c["lines"].as_array().into_iter().flatten().map(|l| [n(&l[0][0]), n(&l[0][1]), n(&l[1][0]), n(&l[1][1])]).collect();
+            (c["direction"].as_str().unwrap_or("").to_string(), lines)
+        })
+        .collect()
+}
+
+/// #8345: a cross break on a 300 x 200 panel is its two diagonals, 5 mm short of the corners: in
+/// the flat pattern and on its own DXF layer, while the B-rep, the outline and the volume stay as
+/// they were. A second one on the same panel, and a pick off the panel, are refused.
+#[test]
+fn cross_break_marks_the_diagonals_in_the_flat_pattern_and_dxf() {
+    let mut s = Session::default();
+    outline_blank(&mut s, json!([[0, 0], [300, 0], [300, 200], [0, 200]]));
+    let (before, volume_before, outline_before) = (run(&mut s, "inspect.measure", json!({})), volume(&mut s), flat(&mut s)["outline"].clone());
+    run(&mut s, "sheet.cross_break", json!({"face": [150, 100, 0.8], "inset": "5 mm"}));
+    let f = flat(&mut s);
+    // 5 mm along each diagonal of the 300 x 200 panel (whose length is √130000).
+    let (dx, dy) = (5.0 * 300.0 / 130_000f64.sqrt(), 5.0 * 200.0 / 130_000f64.sqrt());
+    let want = [[dx, dy, 300.0 - dx, 200.0 - dy], [dx, 200.0 - dy, 300.0 - dx, dy]];
+    let close = |a: &[f64; 4], b: &[f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+    let listed = cross_break_lines(&f);
+    assert_eq!(listed.len(), 1, "{}", f["cross_breaks"]);
+    assert_eq!(listed[0].0, "down", "bows down by default");
+    assert!(listed[0].1.len() == 2 && want.iter().all(|w| listed[0].1.iter().any(|l| close(l, w))), "{:?}", listed[0].1);
+    assert_eq!(f["cross_breaks"][0]["panel"], "base");
+    assert_eq!(f["cross_breaks"][0]["depth"].as_f64(), Some(1.0), "the default depth");
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or_default().to_string();
+    let creases = dxf_lines_on(&dxf, "CROSS_BREAK_DOWN");
+    assert!(creases.len() == 2 && want.iter().all(|w| creases.iter().any(|l| close(l, w))), "{creases:?}");
+    assert!(dxf_lines_on(&dxf, "CROSS_BREAK_UP").is_empty());
+    // A marking only: the same faces, volume and outline.
+    assert_eq!(run(&mut s, "inspect.measure", json!({}))["bodies"][0]["faces"], before["bodies"][0]["faces"]);
+    assert!(rel(volume(&mut s), volume_before) < 1e-12);
+    assert_eq!(f["outline"], outline_before);
+    // A cutter that would cut the bend lines gets none of the creases either.
+    let cut_only = run(&mut s, "sheet.export_dxf", json!({"bend_lines": false}))["dxf"].as_str().unwrap_or_default().to_string();
+    assert!(!cut_only.contains("CROSS_BREAK"), "no crease without the bend lines");
+    let doc = s.doc.to_json();
+    for bad in [
+        json!({"face": [150, 100, 0.8]}),
+        json!({"face": [150, 100, 5]}),
+        json!({"face": [400, 100, 0.8]}),
+        json!({"face": [150, 100, 0.8], "direction": "sideways"}),
+        json!({"face": [150, 100, 0.8], "inset": "-1 mm"}),
+        json!({"face": [150, 100, 0.8], "inset": "200 mm"}),
+        json!({"face": [150, 100, 0.8], "depth": "0 mm"}),
+    ] {
+        assert!(s.execute("sheet.cross_break", &bad).is_err(), "{bad} must be refused");
+        assert_eq!(s.doc.to_json(), doc, "{bad} leaves the design as it was");
+    }
+}
+
+/// #8345: a cross break bowing up, picked on the bottom face, stays with the sheet through
+/// unfold, refold and save and reopen.
+#[test]
+fn cross_break_stays_with_its_panel_through_unfold_and_reopen() {
+    let mut s = Session::default();
+    outline_blank(&mut s, json!([[0, 0], [300, 0], [300, 200], [0, 200]]));
+    run(&mut s, "sheet.cross_break", json!({"face": [100, 50, 0], "direction": "up", "depth": "2 mm"}));
+    let first = cross_break_lines(&flat(&mut s));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].0, "up");
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or_default().to_string();
+    assert_eq!(dxf_lines_on(&dxf, "CROSS_BREAK_UP").len(), 2);
+    run(&mut s, "sheet.unfold", json!({}));
+    assert_eq!(cross_break_lines(&flat(&mut s)), first, "unfolded, the creases stay where they were");
+    run(&mut s, "sheet.refold", json!({}));
+    assert_eq!(cross_break_lines(&flat(&mut s)), first);
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(cross_break_lines(&flat(&mut reopened)), first);
+    assert_eq!(flat(&mut reopened)["cross_breaks"][0]["depth"].as_f64(), Some(2.0));
+}
+
 /// A 100 x 60 tray with one 45° flange 40 high on its y = 0 edge (2.5 mm, R 2.5, K 0.44), and on
 /// it a return 10 high when asked. Returns the far edge of the last panel in the flat pattern:
 /// the base starts at the setback s = (t + R)·tan 22.5°, each bend's zone is (π/4)·(R + K·t) long,

@@ -57,6 +57,7 @@ mod tests;
 pub mod edit;
 pub mod features;
 pub mod inspect;
+pub mod sheet_cross_break;
 pub mod sketch_constraints;
 pub mod view_navigation;
 

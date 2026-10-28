@@ -1,4 +1,4 @@
-//! Sheet metal: rules, Flange (base, edge, contour), Path Flange, Hem, Unfold/Refold, Convert to Sheet Metal,
+//! Sheet metal: rules, Flange (base, edge, contour), Path Flange, Hem, Cross Break, Unfold/Refold, Convert to Sheet Metal,
 //! the flat pattern (outline, bend lines, bend table) and its DXF export.
 
 use serde_json::{Value, json};
@@ -12,7 +12,12 @@ use solidcraft_geom::{Aabb2, Ring, Vec2, Vec3};
 use super::CommandSpec;
 use super::features::{add_feature, check_expr, feature_sketch, profiles, sketch_id};
 use crate::params::{bad, bool_, expr, expr_problem, req_expr, str_, string_list, vec3};
+use crate::schema::features::FeatureResult;
+use crate::schema::sheet_cross_break::{CROSS_BREAK_DIRECTION, CrossBreakParams};
+use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
+
+const CROSS_BREAK_CONTRACT: TypedContract<CrossBreakParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sheet.flange", "Flange", flange).at("SHEET METAL", "CREATE").icon("flange").params(
@@ -42,6 +47,19 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SHEET METAL", "CREATE")
         .icon("hem")
         .params("edges: [[x,y,z] on sheet edges]; length (to the outer face); gap? (inner radius, default: rule); flip?; body?"),
+    CommandSpec::new("sheet.cross_break", "Cross Break", crate::checked!("sheet.cross_break", cross_break))
+        .at("SHEET METAL", "CREATE")
+        .icon("cross_break")
+        .contract(&CROSS_BREAK_CONTRACT)
+        .output(output_schema_for::<FeatureResult>)
+        .params(
+            "face: [x,y,z] on the top or bottom face of a flat panel of a sheet; inset?: expr (how far each crease stops short of the \
+             panel's edge, along the crease; default 0); depth?: expr (how far the middle bows, for the drawing and the press; default 1 mm); \
+             direction?: up|down (which face the panel bows towards; default down); body?. Two diagonal creases corner to corner across \
+             the panel (the diagonals of the smallest rectangle round it, clipped to the panel): drawn on the model, listed in the flat \
+             pattern (cross_breaks) and written to the DXF on layers CROSS_BREAK_UP / CROSS_BREAK_DOWN; the B-rep, the outline and the \
+             volume do not change. One per panel",
+        ),
     CommandSpec::new("sheet.fold", "Fold", fold).at("SHEET METAL", "CREATE").icon("fold").params(
         "line: sketch + curve (a sketch line on the sheet's base face; followed when the sketch changes) or points: [[x,y,z], [x,y,z]]; \
          angle? (default 90 deg); radius? (default: rule); position?: centerline|start|end|mould (where the line sits in the bend, default centerline); \
@@ -77,7 +95,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("flat")
         .noundo()
         .params(
-            "body? → flat size, outline loops and cut-outs (flat coordinates, as point lists), cutout_shapes (the same cut-outs exactly, in the same order: {circle: {center, radius}} for a round hole, else {segments: [{line: [a, b]} | {arc: {center, radius, start_deg, sweep_deg}} | {polyline: [...]}]}), pockets (with their own cutout_shapes), bend lines and the bend table",
+            "body? → flat size, outline loops and cut-outs (flat coordinates, as point lists), cross_breaks ({feature, panel, direction, depth, lines: [[a, b], [a, b]]}, flat coordinates), cutout_shapes (the same cut-outs exactly, in the same order: {circle: {center, radius}} for a round hole, else {segments: [{line: [a, b]} | {arc: {center, radius, start_deg, sweep_deg}} | {polyline: [...]}]}), pockets (with their own cutout_shapes), bend lines and the bend table",
         ),
     CommandSpec::new("sheet.export_dxf", "Export Flat Pattern as DXF", export_dxf).icon("dxf")
         .noundo()
@@ -86,11 +104,11 @@ pub static COMMANDS: &[CommandSpec] = &[
              text?: cut|etch (default cut: letters that text cut through the sheet are cut contours on layer TEXT; etch: single contours on layer ETCH and the sheet keeps its material there; text machined to a depth is always on ETCH), \
              bend_notes?: bool (default false: a note beside each bend line on layer BEND_NOTES, `B1 UP 90%%d R1`, its angle the included angle \
               when the body's rule has angle_display: included), note_height?: mm (default 3), \
-             bend_lines?: bool (default true; false leaves BEND_UP and BEND_DOWN out, for a cutter that would cut them), \
+             bend_lines?: bool (default true; false leaves BEND_UP and BEND_DOWN out, and the cross breaks' CROSS_BREAK_UP and CROSS_BREAK_DOWN, for a cutter that would cut them), \
              layers?: roles|single (default roles, the layers below; single: every entity on layer 0), \
              per_body?: bool (a file for every sheet body, `<path>-<body>.dxf`, or their DXF texts without a path → files: [{body, path | dxf, bends}]; not with `body`) \
              → DXF (AutoCAD 2000, mm): layers OUTLINE (the outer contour), CUT (what is cut out inside it), TEXT or ETCH (letters), BEND_UP and BEND_DOWN (dashed centre lines), BEND_NOTES, \
-             POCKET_<BOTTOM|TOP|INTERNAL>_Z<from>_TO_<to>_MM (one per side and depth) and PERFORATION; inner contours come before the outline",
+             POCKET_<BOTTOM|TOP|INTERNAL>_Z<from>_TO_<to>_MM (one per side and depth), PERFORATION, and CROSS_BREAK_UP and CROSS_BREAK_DOWN (dashed creases of a cross break, by the way the panel bows); inner contours come before the outline",
         ),
     CommandSpec::new("sheet.export_bend_table", "Export Bend Table", export_bend_table).icon("bendtable")
         .noundo()
@@ -388,6 +406,30 @@ fn hem(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
+fn cross_break(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sheet.cross_break";
+    let face = p.get("face").and_then(vec3).ok_or_else(|| bad(cmd, "`face` must be a point [x, y, z] on the top or bottom face of a flat panel"))?;
+    let mut lengths = Vec::new();
+    for key in ["inset", "depth"] {
+        let e = expr(p, key);
+        if let Some(e) = &e {
+            check_expr(s, e, Kind::Length, cmd, key)?;
+        }
+        lengths.push(e);
+    }
+    let up = match p.get("direction").filter(|v| !v.is_null()) {
+        None => false,
+        Some(v) => match v.as_str() {
+            Some("up") => true,
+            Some("down") => false,
+            _ => return Err(bad(cmd, CROSS_BREAK_DIRECTION)),
+        },
+    };
+    let mut lengths = lengths.into_iter();
+    let (inset, depth) = (lengths.next().flatten(), lengths.next().flatten());
+    add_feature(s, p, FeatureKind::SheetCrossBreak { face: FacePick(face), inset, depth, up, body: str_(p, "body").map(BodyName::from) })
+}
+
 fn fold(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sheet.fold";
     let (sketch, curve, a, b) = match p.get("points") {
@@ -678,6 +720,14 @@ fn flat_json(sh: &SheetBody) -> Result<Value> {
             "pattern": if p.square { "square" } else { "staggered" }, "count": n,
             "open_area_mm2": n as f64 * std::f64::consts::PI * (p.diameter / 2.0).powi(2)}));
     }
+    let cross_breaks: Vec<Value> = sh
+        .cross_breaks
+        .iter()
+        .map(|c| {
+            json!({"feature": c.feature, "panel": sh.cross_break_panel(c), "direction": if c.up { "up" } else { "down" }, "depth": c.depth,
+                "lines": c.lines.iter().map(|(a, b)| json!([pt(a), pt(b)])).collect::<Vec<_>>()})
+        })
+        .collect();
     let bend_zones: Vec<Value> = sh
         .bend_zones()
         .iter()
@@ -688,7 +738,7 @@ fn flat_json(sh: &SheetBody) -> Result<Value> {
         })
         .collect();
     let mut out = json!({"body": sh.body, "rule": sh.rule, "thickness": sh.t, "k_factor": sh.k, "flat_size_mm": [w, h, sh.t], "outline": outline, "cutouts": holes, "cutout_shapes": hole_shapes, "pockets": pockets, "bends": bends, "unfolded": sh.flat,
-        "perforations": perforations, "bend_zones": bend_zones});
+        "perforations": perforations, "cross_breaks": cross_breaks, "bend_zones": bend_zones});
     if !bores.is_empty() {
         out["bores"] = Value::Array(bores);
     }
@@ -747,6 +797,9 @@ fn dxf_layer(name: &str) -> solidcraft_io::DxfLayer {
         "BEND_UP" => DxfLayer::new(name, 1).dashed(),
         "BEND_DOWN" => DxfLayer::new(name, 5).dashed(),
         "BEND_NOTES" => DxfLayer::new(name, 8),
+        // A cross break's creases are pressed like bends: their colours, dashed.
+        "CROSS_BREAK_UP" => DxfLayer::new(name, 1).dashed(),
+        "CROSS_BREAK_DOWN" => DxfLayer::new(name, 5).dashed(),
         _ => DxfLayer::new(name, 3),
     }
 }
@@ -781,7 +834,7 @@ fn bend_note(b: &solidcraft_doc::sheet::BendInfo, height: f64, display: sheet::A
 /// A DXF (AutoCAD 2000, mm) of the flat pattern on layers by role: OUTLINE (the outer contour of
 /// each piece), CUT (what is cut out inside it, and the loose pieces of a cut), TEXT or ETCH
 /// (letters), BEND_UP and BEND_DOWN (dashed centre lines), BEND_NOTES (when asked for), one layer
-/// per pocket depth and PERFORATION. Inner contours are written before the outline, so a program
+/// per pocket depth, PERFORATION, and CROSS_BREAK_UP and CROSS_BREAK_DOWN (a cross break's creases). Inner contours are written before the outline, so a program
 /// that follows the file's order cuts inside-out. Free-form curves as `o.curves` says.
 pub fn flat_dxf(sh: &SheetBody, o: &DxfOptions) -> Result<String> {
     use solidcraft_io::{DxfEntity, DxfShape};
@@ -883,6 +936,14 @@ pub fn flat_dxf(sh: &SheetBody, o: &DxfOptions) -> Result<String> {
     }
     for (c, r) in perforation {
         entities.push(DxfEntity { layer: "PERFORATION".into(), shape: DxfShape::Circle { c, r } });
+    }
+    // Cross breaks (#8345): pressed, not cut, so they go wherever the bend lines go.
+    if !o.no_bend_lines {
+        for c in &sh.cross_breaks {
+            for (a, b) in c.lines {
+                entities.push(DxfEntity { layer: if c.up { "CROSS_BREAK_UP" } else { "CROSS_BREAK_DOWN" }.into(), shape: DxfShape::Line(a, b) });
+            }
+        }
     }
     // One layer: every entity on layer 0, which every drawing has.
     if o.one_layer {
