@@ -1,11 +1,23 @@
 {
+  "ar": {
+    "Flat size X": "الحجم المسطّح X",
+    "Flat size Y": "الحجم المسطّح Y"
+  },
   "en": {
     "Flat size X": "Flat size X",
     "Flat size Y": "Flat size Y"
   },
+  "he": {
+    "Flat size X": "מידות הפריסה X",
+    "Flat size Y": "מידות הפריסה Y"
+  },
   "ja": {
     "Flat size X": "展開サイズ X",
     "Flat size Y": "展開サイズ Y"
+  },
+  "vi": {
+    "Flat size X": "Kích thước phôi phẳng X",
+    "Flat size Y": "Kích thước phôi phẳng Y"
   },
   "zh": {
     "Flat size X": "平板尺寸 X",
