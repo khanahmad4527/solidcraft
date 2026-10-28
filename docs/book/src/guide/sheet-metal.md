@@ -8,6 +8,8 @@ and selected when the active body is a sheet), and builds parts from a sheet of 
   sketch, or an edge flange from a part edge.
 - [**Hem**](../reference/commands.md#command-sheet.hem) returns a sheet edge back toward the sheet; no new sketch is required.
 - **Fold** (`sheet.fold`) bends the sheet along a sketch line.
+- **Cross Break** (`sheet.cross_break`) marks two diagonal creases across a flat panel, so a large
+  panel bows a little and stiffens; it changes no geometry (see below).
 - **Unfold / Refold** (`sheet.unfold`, `sheet.refold`) for working on the flat part.
 - **Convert** (`sheet.convert`) turns a plate of constant thickness into sheet metal, or, with
   bend edges, a solid or a shelled body.
@@ -442,3 +444,22 @@ flange's `far`, `side0`, `side1`; `rim.bend0`/`rim.bend1` for a bend's flat ends
 face name takes it too (`sheet:Body1:F3.1:top`), and finds the face from the sheet itself, so the
 name stays with that face while the sheet's sizes change and other flanges come and go. Faces the
 sheet does not describe (a hole's wall) have none.
+
+**Cross Break** (`sheet.cross_break`) marks a large flat panel to be pressed with two shallow
+creases from corner to corner, so that it bows a little and stops drumming or sagging (a lid, a
+cabinet back, the side of a duct). Pick a point on the panel's top or bottom face (`face`); the
+creases are the diagonals of the smallest rectangle round the panel's flat outline, kept on the
+panel where a corner relief or a notch cuts a corner off, and each stops `inset` short of the
+panel's edge, measured along the crease (default 0). `direction` says which face the panel bows
+towards, `up` (its top face, the side up bends turn to) or `down` (the default), and `depth` how
+far its middle bows (default 1 mm), for the drawing and the press. It is a marking, like a
+perforation field: the body, its outline and its volume do not change. The creases are drawn on
+the panel in the view, listed in Create Flat Pattern (`cross_breaks`, in flat coordinates with
+their panel, direction and depth), drawn dashed on the flat pattern page, and written to the DXF
+as lines on CROSS_BREAK_UP or CROSS_BREAK_DOWN (dashed, in the colours of the bend lines). Like
+the bend lines they are left out when `bend_lines` is false. A panel takes one cross break; a pick
+off every flat panel face (on a bend, a rim or off the sheet) is refused.
+
+```json
+{"command":"sheet.cross_break","params":{"face":[150,100,2],"inset":"5 mm","direction":"down"}}
+```

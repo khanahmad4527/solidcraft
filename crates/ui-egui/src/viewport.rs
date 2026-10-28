@@ -1253,6 +1253,8 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
     // the CPU.
     let mut instances = Instances::new(app, &shown, shaded);
     let mut thread_budget = solidcraft_engine::cosmetic_threads::Budget::default();
+    // Cross break creases (#8345), drawn over their sheet's panels like its edges.
+    let markings = solidcraft_engine::view::sheet_markings(&app.session);
     for (b, slots) in shown.into_iter().zip(slots) {
         let faded = body_faded(app, b, &active_bodies);
         let identity = match appearance.keys.get(&b.name).copied() {
@@ -1289,6 +1291,9 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
             for (a, c) in solidcraft_engine::cosmetic_threads::segments_with_budget(b, &mesh, &st.threads, &mut thread_budget) {
                 sc.line(a.to_f32(), c.to_f32(), slots.edge, 0.85, false);
             }
+        }
+        for (_, a, c) in markings.iter().filter(|m| m.0 == b.name) {
+            sc.line(a.to_f32(), c.to_f32(), slots.edge, 1.2, false);
         }
         let base = resolved.component.or(resolved.body).unwrap_or(tk.body);
         let col = if faded { c4(base.gamma_multiply(0.35)) } else { c4(base) };
