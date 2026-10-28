@@ -9,6 +9,12 @@ pub(crate) fn paint(painter: &egui::Painter, p: Pos2) {
     // An arrow pointer, tip at `p`.
     let pts: Vec<Pos2> =
         [(0.0, 0.0), (0.0, 17.0), (4.5, 13.0), (7.5, 20.0), (10.5, 18.8), (7.5, 12.0), (13.0, 12.0)].iter().map(|(x, y)| p + vec2(*x, *y)).collect();
+    // Local recording build: a plain white pointer without the tag.
+    if std::env::var_os("SOLIDCRAFT_PLAIN_POINTER").is_some() {
+        painter.add(Shape::convex_polygon(pts.clone(), Color32::WHITE, Stroke::NONE));
+        painter.add(Shape::closed_line(pts, Stroke::new(1.2, Color32::BLACK)));
+        return;
+    }
     painter.add(Shape::convex_polygon(pts.clone(), ic.agent, Stroke::NONE));
     painter.add(Shape::closed_line(pts, Stroke::new(1.5, ic.highlight)));
     let label = painter.layout_no_wrap("Agent".into(), FontId::proportional(crate::theme::Tokens::get().font_small), ic.highlight);
