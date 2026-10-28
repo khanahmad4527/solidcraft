@@ -707,6 +707,28 @@ pub(super) fn sheet_eval(
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }
+        FeatureKind::SheetCrossBreak { face, inset, depth, up, body } => {
+            // The named body, else the sheet with a panel face under the pick.
+            let i = match body {
+                Some(_) => sheet_for(st, body, None)?,
+                None => st
+                    .sheets
+                    .iter()
+                    .position(|sh| sh.panel_face_at(face.0, sh.t * 0.25).is_some())
+                    .ok_or_else(|| DocError::Invalid(sheet::CROSS_BREAK_OFF_PANEL.into()))?,
+            };
+            let inset = match inset {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 0.0,
+            };
+            let depth = match depth {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 1.0,
+            };
+            let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            sh.add_cross_break(f.id, face.0, inset, depth, *up)?;
+            Ok(())
+        }
         FeatureKind::SheetFold { sketch, curve, a, b, angle, radius, position, flip, fixed, body } => {
             // The sketch line, where it is now.
             let (a, b) = match (sketch, curve) {

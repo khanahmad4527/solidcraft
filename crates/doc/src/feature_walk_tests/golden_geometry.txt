@@ -132,6 +132,9 @@ sheet_flange
   moves: edges[0].point[0], edges[0].point[1], edges[0].point[2], edges[1].point[0], edges[1].point[1], edges[1].point[2]
 sheet_hem
   moves: edges[0][0], edges[0][1], edges[0][2]
+sheet_cross_break
+  moves: face[0], face[1], face[2]
+  face points: [0, 0, 0]
 sheet_perforate
 sheet_fold
   moves: a[0], a[1], a[2], b[1], b[2], fixed[0], fixed[1], fixed[2]

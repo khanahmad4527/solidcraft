@@ -7106,6 +7106,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
         | FeatureKind::SheetContour { .. }
         | FeatureKind::SheetFlange { .. }
         | FeatureKind::SheetHem { .. }
+        | FeatureKind::SheetCrossBreak { .. }
         | FeatureKind::SheetPerforate { .. }
         | FeatureKind::SheetFold { .. }
         | FeatureKind::SheetPath { .. }

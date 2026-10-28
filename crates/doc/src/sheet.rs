@@ -18,10 +18,13 @@ use crate::{DocError, Document, IDENTITY, Mat, Result, apply_point, apply_vector
 
 #[path = "sheet_convert.rs"]
 mod convert;
+#[path = "sheet_cross_break.rs"]
+mod cross_break;
 #[path = "sheet_face_names.rs"]
 mod face_names;
 pub use convert::{bend_edge_names, convert_body};
 pub(crate) use convert::{outline_loop, round_wall};
+pub use cross_break::{CROSS_BREAK_OFF_PANEL, CROSS_BREAK_TWICE, SheetCrossBreak};
 pub use face_names::body_sheet_face_names;
 
 // Bound the aggregate geometry, including sampled curves and intermediate clipping pieces.
@@ -633,6 +636,9 @@ pub struct SheetBody {
     /// Perforation fields (#732), flat coordinates; their holes are computed on demand and never cut into the B-rep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub perforations: Vec<SheetPerforation>,
+    /// Cross breaks (#8345), flat coordinates: creases marked on a panel, never pressed into the B-rep.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cross_breaks: Vec<SheetCrossBreak>,
     /// Regions (flat coordinates) that text cut or machined, letters with their counters as
     /// holes: a record of where the sheet's text went, so that its DXF can write the letters on
     /// layers of their own (see [`SheetBody::letters`]). The cut-outs and pockets themselves are
@@ -4734,6 +4740,9 @@ impl SheetBody {
         for p in &mut self.perforations {
             p.from_right = !p.from_right;
         }
+        for c in &mut self.cross_breaks {
+            c.flip_flat();
+        }
         for (_, a, b) in &mut self.base_curves {
             (*a, *b) = (flip_x(*b), flip_x(*a));
         }
@@ -4761,6 +4770,7 @@ pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region
         pockets: Vec::new(),
         bores: Vec::new(),
         perforations: Vec::new(),
+        cross_breaks: Vec::new(),
         labels: Vec::new(),
         flat: false,
         gap: rv.gap,
@@ -4821,6 +4831,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
         pockets: Vec::new(),
         bores: Vec::new(),
         perforations: Vec::new(),
+        cross_breaks: Vec::new(),
         labels: Vec::new(),
         flat: false,
         gap: rv.gap,

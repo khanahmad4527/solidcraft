@@ -1200,6 +1200,30 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<BodyName>,
     },
+    /// Cross Break (#8345): two diagonal creases pressed corner to corner across one flat panel of
+    /// a sheet, so that it bows a little and stiffens. A marking, like a perforation field: the
+    /// two lines go to the view, the flat pattern and the DXF, not into the B-rep, and the outline
+    /// and the volume stay as they are (`sheet::SheetBody::add_cross_break`).
+    SheetCrossBreak {
+        /// A point on the panel's top or bottom face (a pick: it follows the face's name).
+        face: FacePick,
+        /// How far the creases stop short of the corners of the rectangle round the panel,
+        /// along each side (default 0).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Inset")]
+        inset: Option<Expr>,
+        /// How far the middle of the panel bows (default 1 mm): recorded for the drawing and the
+        /// press, not modelled.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Depth")]
+        depth: Option<Expr>,
+        /// The panel bows towards its top face (the side flanges bend up to); else towards the
+        /// bottom one.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<BodyName>,
+    },
     /// A perforation field (#732): round holes of `diameter` on a staggered (60°) or square grid of `pitch` over the
     /// whole flat sheet, kept `margin` (default: the diameter) clear of its edges, cut-outs and bend zones. Stored like
     /// a cosmetic thread: the holes go to the flat pattern, the DXF and the measured volume, not into the B-rep, so a
@@ -2316,6 +2340,7 @@ impl FeatureKind {
                 | FeatureKind::SheetContour { .. }
                 | FeatureKind::SheetFlange { .. }
                 | FeatureKind::SheetHem { .. }
+                | FeatureKind::SheetCrossBreak { .. }
                 | FeatureKind::SheetPerforate { .. }
                 | FeatureKind::SheetFold { .. }
                 | FeatureKind::SheetPath { .. }
@@ -2373,6 +2398,7 @@ impl FeatureKind {
             FeatureKind::SheetContour { .. } => "ContourFlangeFeature",
             FeatureKind::SheetFlange { .. } => "EdgeFlangeFeature",
             FeatureKind::SheetHem { .. } => "HemFeature",
+            FeatureKind::SheetCrossBreak { .. } => "CrossBreakFeature",
             FeatureKind::SheetPerforate { .. } => "PerforateFeature",
             FeatureKind::SheetFold { .. } => "FoldFeature",
             FeatureKind::SheetPath { .. } => "PathFlangeFeature",
@@ -2456,6 +2482,7 @@ impl FeatureKind {
             FeatureKind::SheetContour { .. } => "ContourFlange",
             FeatureKind::SheetFlange { .. } => "EdgeFlange",
             FeatureKind::SheetHem { .. } => "Hem",
+            FeatureKind::SheetCrossBreak { .. } => "CrossBreak",
             FeatureKind::SheetPerforate { .. } => "Perforate",
             FeatureKind::SheetFold { .. } => "Fold",
             FeatureKind::SheetPath { .. } => "PathFlange",
