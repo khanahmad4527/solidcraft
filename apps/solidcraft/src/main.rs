@@ -20,6 +20,8 @@
 #[cfg(not(target_os = "macos"))]
 #[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
+#[cfg(target_os = "macos")]
+mod app_nap;
 mod come_forward;
 mod control_server;
 mod device_lost;
@@ -97,6 +99,9 @@ struct App {
     nav_bridge: nav_bridge::NavBridge,
     /// Where the next file dialog opens: it follows the open design (#7756).
     dialog_folder: DialogFolder,
+    /// Held awake while a recording runs (`ui.record.start`).
+    #[cfg(target_os = "macos")]
+    app_nap: app_nap::AppNap,
 }
 
 impl eframe::App for App {
@@ -158,6 +163,8 @@ impl eframe::App for App {
             menu.tick(&mut self.solve, ctx);
         }
         self.solve.logic(ctx);
+        #[cfg(target_os = "macos")]
+        self.app_nap.hold(self.solve.recording.is_some());
         self.dialog_folder.design(self.solve.session.path.as_deref());
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if !self.solve.file_picker_busy() {
@@ -1088,6 +1095,8 @@ fn main() -> eframe::Result {
                 native_menu,
                 nav_bridge,
                 dialog_folder,
+                #[cfg(target_os = "macos")]
+                app_nap: Default::default(),
             }))
         }),
     );

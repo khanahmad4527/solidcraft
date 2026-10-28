@@ -335,3 +335,14 @@ SolidCraft changes:
   error scopes, awaiting every result before returning it. A refused UI pipeline (D3D12
   `egui_pipeline` shader compilation, #6648) returns `WgpuError::CreateRendererError` through
   eframe so startup can retry another backend instead of invoking wgpu's panic handler.
+
+## eframe 0.36.2 (MIT OR Apache-2.0, Emil Ernerfeldt and contributors)
+
+Original package sources from https://github.com/emilk/egui/tree/0.36.2/crates/eframe, with
+both original licence texts retained.
+
+SolidCraft changes:
+- `src/native/wgpu_integration.rs`: while `egui_wgpu::record` records, the root window runs its
+  UI and paints (offscreen) even when covered or minimized, so a recording keeps its frames.
+- `src/native/winit_integration.rs`: while recording, a hidden or minimized window is not
+  throttled to 10 frames a second.

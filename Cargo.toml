@@ -160,6 +160,8 @@ matext4cgmath = { path = "vendor/matext4cgmath" }
 
 # Keep OpenGL pipelines, resolve textures and CAD callbacks at the same safe sample count.
 egui-wgpu = { path = "vendor/egui-wgpu" }
+# Local recording build: a covered window still draws while recording (vendor/README.md).
+eframe = { path = "vendor/eframe" }
 
 # Mutation testing (cargo-mutants, docs/mutation-testing.md): the ci profile with incremental
 # builds, since every mutant rebuilds the crates above the one it changes.

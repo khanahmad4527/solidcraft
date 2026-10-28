@@ -165,7 +165,8 @@ pub fn step(app: &mut SolveApp, ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
-/// The pointer where the window last saw it, or where queued synthetic moves leave it.
+/// Where queued synthetic moves leave the pointer, else where the agent cursor shows it (it
+/// also walks to toolbar buttons for commands), else where the window last saw it.
 pub fn pointer_now(app: &SolveApp, ctx: &egui::Context) -> Option<egui::Pos2> {
     app.synthetic
         .iter()
@@ -174,5 +175,6 @@ pub fn pointer_now(app: &SolveApp, ctx: &egui::Context) -> Option<egui::Pos2> {
             egui::Event::PointerMoved(p) => Some(*p),
             _ => None,
         })
+        .or_else(|| app.agent.pos.filter(|_| app.ui.agent_cursor.show))
         .or_else(|| ctx.input(|i| i.pointer.latest_pos()))
 }

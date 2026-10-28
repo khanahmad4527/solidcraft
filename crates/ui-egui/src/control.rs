@@ -1095,6 +1095,38 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w.clamp(320.0, 8192.0) as f32, h.clamp(240.0, 8192.0) as f32)));
             ok(Value::Null)
         }
+        "ui.record.start" => {
+            let Some(dir) = s("dir") else { return err("missing `dir`") };
+            if let Err(e) = vfs::check(dir) {
+                return err(e);
+            }
+            let fps = f("fps").unwrap_or(60.0);
+            if !(1.0..=240.0).contains(&fps) {
+                return err("`fps` must be from 1 to 240");
+            }
+            let scale = match p.get("scale") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_f64().filter(|x| x.is_finite() && (0.25..=8.0).contains(x)) {
+                    Some(x) => Some(x as f32),
+                    None => return err("`scale` must be from 0.25 to 8 pixels per point"),
+                },
+            };
+            if let Some(old) = app.recording.take() {
+                crate::record::stop(old);
+            }
+            match crate::record::start(std::path::PathBuf::from(dir), fps, scale, app.now) {
+                Ok(rec) => {
+                    app.recording = Some(rec);
+                    ctx.request_repaint();
+                    ok(json!({"dir": dir, "fps": fps, "scale": scale}))
+                }
+                Err(e) => err(e),
+            }
+        }
+        "ui.record.stop" => match app.recording.take() {
+            Some(rec) => ok(crate::record::stop(rec)),
+            None => err("not recording"),
+        },
         "ui.screenshot" => match s("path").map(vfs::check) {
             Some(Err(e)) => err(e),
             _ => Outcome::Screenshot { path: s("path").map(str::to_string) },

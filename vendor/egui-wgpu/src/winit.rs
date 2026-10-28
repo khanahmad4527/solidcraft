@@ -54,6 +54,8 @@ pub struct Painter {
     surfaces: ViewportIdMap<SurfaceState>,
     capture_tx: CaptureSender,
     capture_rx: CaptureReceiver,
+    // SolidCraft: the offscreen textures of a recording (`crate::record`).
+    record_textures: Option<crate::record::Textures>,
 }
 
 impl Painter {
@@ -95,6 +97,7 @@ impl Painter {
 
             capture_tx,
             capture_rx,
+            record_textures: None,
         }
     }
 
@@ -655,6 +658,24 @@ impl Painter {
             return vsync_sec;
         }
 
+        // SolidCraft: while recording, the root window draws offscreen only (`crate::record`).
+        if viewport_id == ViewportId::ROOT
+            && let Some(record_ppp) = crate::record::pixels_per_point()
+        {
+            self.paint_recorded(
+                viewport_id,
+                pixels_per_point,
+                record_ppp,
+                clear_color,
+                clipped_primitives,
+                textures_delta,
+            );
+            return vsync_sec;
+        }
+        if viewport_id == ViewportId::ROOT {
+            self.record_textures = None;
+        }
+
         // If the previous frame produced `CurrentSurfaceTexture::Lost`, the action match
         // below set `needs_recreate`. Recreate the surface now, before re-borrowing
         // `self.render_state` / `self.surfaces` for the rest of the paint.
@@ -972,6 +993,169 @@ impl Painter {
         }
 
         vsync_sec
+    }
+
+    /// SolidCraft: draw the frame into the recording's own texture, read it back and hand it to
+    /// the recording (`crate::record`). The window's surface is left alone.
+    fn paint_recorded(
+        &mut self,
+        viewport_id: ViewportId,
+        pixels_per_point: f32,
+        record_ppp: Option<f32>,
+        clear_color: [f32; 4],
+        clipped_primitives: &[epaint::ClippedPrimitive],
+        textures_delta: &mut epaint::textures::TexturesDelta,
+    ) {
+        let (Some(render_state), Some(surface_state)) = (
+            self.render_state.as_ref(),
+            self.surfaces.get(&viewport_id),
+        ) else {
+            return;
+        };
+        let window_ppp = pixels_per_point * surface_state.scale;
+        let ppp = record_ppp
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .unwrap_or(window_ppp);
+        if !(window_ppp.is_finite() && window_ppp > 0.0) {
+            return;
+        }
+        let max_side = render_state.device.limits().max_texture_dimension_2d;
+        let side = |px: u32| {
+            ((px as f32 / window_ppp * ppp).round() as u32).clamp(1, max_side)
+        };
+        let size = (side(surface_state.width), side(surface_state.height));
+        let samples = self.options.msaa_samples.max(1);
+        if self
+            .record_textures
+            .as_ref()
+            .is_none_or(|t| t.size != size)
+        {
+            self.record_textures = Some(crate::record::Textures::new(
+                &render_state.device,
+                render_state.target_format,
+                samples,
+                self.options.depth_stencil_format,
+                size,
+            ));
+        }
+        let Some(targets) = self.record_textures.as_ref() else {
+            return;
+        };
+
+        let mut encoder =
+            render_state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("egui_record_encoder"),
+                });
+        let screen_descriptor = renderer::ScreenDescriptor {
+            size_in_pixels: [size.0, size.1],
+            pixels_per_point: ppp,
+        };
+        let user_cmd_bufs = {
+            let mut renderer = render_state.renderer.write();
+            #[expect(clippy::iter_over_hash_type)]
+            for (id, image_deltas) in textures_delta.set.drain() {
+                for image_delta in image_deltas {
+                    renderer.update_texture(
+                        &render_state.device,
+                        &render_state.queue,
+                        id,
+                        &image_delta,
+                    );
+                }
+            }
+            renderer.update_buffers(
+                &render_state.device,
+                &render_state.queue,
+                &mut encoder,
+                clipped_primitives,
+                &screen_descriptor,
+            )
+        };
+        {
+            let renderer = render_state.renderer.read();
+            let target_view = targets
+                .color
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let (view, resolve_target) = match &targets.msaa {
+                Some(msaa) => (msaa, Some(&target_view)),
+                None => (&target_view, None),
+            };
+            let depth_ops = self.options.depth_stencil_format.map(|f| {
+                (
+                    f.has_depth_aspect().then_some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    f.has_stencil_aspect().then_some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                )
+            });
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui_record_render"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear_color[0] as f64,
+                            g: clear_color[1] as f64,
+                            b: clear_color[2] as f64,
+                            a: clear_color[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: targets.depth.as_ref().zip(depth_ops).map(
+                    |(view, (depth_ops, stencil_ops))| wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops,
+                        stencil_ops,
+                    },
+                ),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            renderer.render(
+                &mut render_pass.forget_lifetime(),
+                clipped_primitives,
+                &screen_descriptor,
+            );
+        }
+        encoder.copy_texture_to_buffer(
+            targets.color.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &targets.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(targets.padded_row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+        );
+        render_state
+            .queue
+            .submit(core::iter::chain(user_cmd_bufs, [encoder.finish()]));
+        {
+            let mut renderer = render_state.renderer.write();
+            #[expect(clippy::iter_over_hash_type)]
+            for id in textures_delta.free.drain() {
+                renderer.free_texture(&id);
+            }
+        }
+        if let Some(frame) = targets.read(&render_state.device) {
+            crate::record::deliver(frame);
+        }
     }
 
     /// Call this at the beginning of each frame to receive the requested screenshots.

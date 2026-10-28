@@ -37,6 +37,9 @@ pub mod capture;
 #[cfg(feature = "winit")]
 pub mod winit;
 
+/// SolidCraft: offscreen recording of the root window's frames.
+pub mod record;
+
 use std::sync::Arc;
 
 use epaint::mutex::RwLock;

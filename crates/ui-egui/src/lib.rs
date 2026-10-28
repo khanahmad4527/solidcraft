@@ -207,6 +207,7 @@ pub mod preview;
 mod primitive_placement;
 #[cfg(test)]
 mod primitive_units_tests;
+pub mod record;
 pub mod recovery_ui;
 pub mod ref_images;
 mod render_ui;
@@ -459,6 +460,10 @@ pub struct SolveApp {
     /// Timed control-channel motion (`ui.camera`/`ui.move` with `seconds`, `ui.text` with
     /// `interval`), stepped each frame and answered when done ([`control_glide`]).
     pub glides: Vec<control_glide::Glide>,
+    /// A frame recording in progress (`ui.record.start`): the clock is virtual meanwhile.
+    pub recording: Option<record::Recording>,
+    /// Keeps the input time going on from where a recording left it.
+    pub time_shift: record::TimeShift,
     /// Seconds since start, as of this frame.
     pub now: f64,
     /// The history marker before Edit Sketch rolled the timeline to the sketch; Finish Sketch
@@ -698,6 +703,8 @@ impl SolveApp {
             cam: Camera::default(),
             cam_anim: None,
             glides: Vec::new(),
+            recording: None,
+            time_shift: Default::default(),
             now: 0.0,
             pre_sketch_marker: None,
             pre_sketch_cam: None,
@@ -2249,7 +2256,8 @@ impl SolveApp {
         self.follow_view_request(true);
         agent_cursor::step(self, ctx);
         control_glide::step(self, ctx);
-        if !self.synthetic.is_empty() {
+        // A recording paints every frame, also with nothing moving: the video runs on.
+        if !self.synthetic.is_empty() || self.recording.is_some() {
             ctx.request_repaint();
         }
         issue_report::tick(self, ctx);
@@ -2285,6 +2293,7 @@ impl SolveApp {
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
     /// capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        record::input_time(self.recording.as_ref(), &mut self.time_shift, raw);
         self.synthetic_input(raw);
         issue_report::hold_input(self, raw);
     }
