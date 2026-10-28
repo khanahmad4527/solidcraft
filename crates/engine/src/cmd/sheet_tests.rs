@@ -5618,3 +5618,122 @@ fn an_unfolded_sheets_flat_face_is_named_after_its_base_at_every_size() {
         }
     }
 }
+
+// ---- Tab (#8325) ----
+
+/// The issue's example: a 2 mm rule, a 100 x 60 base on XY, and a 40 x 40 profile on its top
+/// face over the y = 60 edge by 10 mm (sketch `Ear`).
+fn tab_sketch(s: &mut Session) {
+    run(s, "sheet.manage_rules", json!({"name": "S2", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": "0.4", "active": true}));
+    run(s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]}));
+    run(s, "sketch.finish", json!({}));
+    run(s, "sheet.flange", json!({"sketch": "Base"}));
+    run(s, "sketch.create", json!({"plane": {"face": [50, 30, 2]}, "name": "Ear"}));
+    run(s, "sketch.rectangle.two_point", json!({"p0": [30, 50], "p1": [70, 90]}));
+    run(s, "sketch.finish", json!({}));
+}
+
+/// A rectangle sketch on the face at `face`, from world corners `a` to `b` (on that face).
+fn face_rectangle(s: &mut Session, name: &str, face: [f64; 3], a: [f64; 3], b: [f64; 3]) {
+    run(s, "sketch.create", json!({"plane": {"face": face}, "name": name}));
+    let plane = s.model.state().sketches.last().map(|ss| ss.plane).unwrap();
+    let local = |p: [f64; 3]| plane.to_local(solidcraft_geom::Vec3::new(p[0], p[1], p[2]));
+    let (p0, p1) = (local(a), local(b));
+    run(s, "sketch.rectangle.two_point", json!({"p0": [p0.x, p0.y], "p1": [p1.x, p1.y]}));
+    run(s, "sketch.finish", json!({}));
+}
+
+fn refused(s: &mut Session, p: Value, want: &str) {
+    let before = s.doc.to_json();
+    let e = s.execute("sheet.tab", &p).unwrap_err().to_string();
+    assert!(e.contains(want), "{p}: {e}");
+    assert_eq!(s.doc.to_json(), before, "{p}: a refused tab leaves the design as it was");
+}
+
+#[test]
+fn a_tab_joins_the_sheet_and_unfolds_with_it() {
+    let mut s = Session::default();
+    tab_sketch(&mut s);
+    // Flange on that sketch still makes a sheet of its own.
+    let mut flange = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(run(&mut flange, "sheet.flange", json!({"sketch": "Ear"}))["created_bodies"], json!(["Body2"]));
+    // Tab: the 40 x 30 past the edge joins the same body.
+    let r = run(&mut s, "sheet.tab", json!({"sketch": "Ear"}));
+    assert_eq!((r["created_bodies"].clone(), r["changed_bodies"].clone()), (json!([]), json!(["Body1"])));
+    assert_eq!(s.model.state().bodies.len(), 1);
+    assert!((volume(&mut s) - 7200.0 * 2.0).abs() < 1e-6, "{}", volume(&mut s));
+    let f = flat(&mut s);
+    assert_eq!(f["flat_size_mm"], json!([100.0, 90.0, 2.0]));
+    assert_eq!(f["outline"].as_array().map(Vec::len), Some(1), "one piece");
+    assert_eq!(f["outline"][0].as_array().map(Vec::len), Some(8), "{}", f["outline"]);
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    assert_eq!(solidcraft_io::read_dxf(&dxf).unwrap().len(), 8);
+    // The tab's far edge takes a flange; the sheet still unfolds in one piece.
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 90, 2]], "height": 15}));
+    assert_eq!(s.model.state().bodies.len(), 1);
+    assert_eq!(flat(&mut s)["outline"].as_array().map(Vec::len), Some(1));
+    let with_flange = volume(&mut s);
+    // Undo, redo and reopening keep it.
+    run(&mut s, "edit.undo", json!({}));
+    assert!((volume(&mut s) - 14400.0).abs() < 1e-6);
+    run(&mut s, "edit.redo", json!({}));
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(reopened.model.results.iter().all(|r| r.error.is_none()), "{:?}", reopened.model.results);
+    assert!((volume(&mut reopened) - with_flange).abs() < 1e-6);
+}
+
+#[test]
+fn a_tab_on_a_folded_wall_and_tabs_that_are_refused() {
+    let mut s = Session::default();
+    tab_sketch(&mut s);
+    // The base sketch lies on the bottom face: its profile is the base already.
+    refused(&mut s, json!({"sketch": "Base"}), solidcraft_doc::sheet::TAB_ADDS_NOTHING);
+    // A 20 mm wall up from the y = 0 edge: its outer face is y = 0, its top edge at z = 20.
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20}));
+    let before = volume(&mut s);
+    // A 20 x 10 lug on the wall's outer face over its top edge.
+    face_rectangle(&mut s, "Lug", [50.0, 0.0, 12.0], [40.0, 0.0, 15.0], [60.0, 0.0, 30.0]);
+    let r = run(&mut s, "sheet.tab", json!({"sketch": "Lug"}));
+    assert_eq!(r["changed_bodies"], json!(["Body1"]));
+    assert_eq!(s.model.state().bodies.len(), 1);
+    assert!((volume(&mut s) - before - 200.0 * 2.0).abs() < 1e-3, "{}", volume(&mut s) - before);
+    assert_eq!(flat(&mut s)["outline"].as_array().map(Vec::len), Some(1));
+    // Folded, the lug stands above the wall.
+    assert!(contains(&s, [50.0, 1.0, 29.0]));
+    // Refused: apart from the face's outline, into a bend, off the sheet, adding nothing.
+    face_rectangle(&mut s, "Apart", [50.0, 30.0, 2.0], [30.0, 70.0, 2.0], [70.0, 90.0, 2.0]);
+    refused(&mut s, json!({"sketch": "Apart"}), solidcraft_doc::sheet::TAB_APART);
+    face_rectangle(&mut s, "Bend", [50.0, 30.0, 2.0], [30.0, -2.0, 2.0], [70.0, 10.0, 2.0]);
+    refused(&mut s, json!({"sketch": "Bend"}), solidcraft_doc::sheet::TAB_IN_BEND);
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Above"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [30, 50], "p1": [70, 90]}));
+    run(&mut s, "sketch.finish", json!({}));
+    refused(&mut s, json!({"sketch": "Above"}), solidcraft_doc::sheet::TAB_OFF_SHEET);
+    refused(&mut s, json!({"sketch": "Apart", "body": "Nope"}), "not a sheet metal body");
+    run(&mut s, "sheet.unfold", json!({}));
+    refused(&mut s, json!({"sketch": "Ear"}), "refold the sheet");
+}
+
+#[test]
+fn hostile_tab_params_never_panic() {
+    let mut s = Session::default();
+    tab_sketch(&mut s);
+    for p in [
+        json!({"sketch": null}),
+        json!({"sketch": 1e308}),
+        json!({"sketch": -1}),
+        json!({"sketch": [1, 2]}),
+        json!({"sketch": "Ear", "profiles": "bogus"}),
+        json!({"sketch": "Ear", "profiles": [99]}),
+        json!({"sketch": "Ear", "profiles": [{"point": [1e308, -1e308]}]}),
+        json!({"sketch": "Ear", "body": 5}),
+        json!({"sketch": "Ear", "body": ""}),
+        json!({"sketch": "Ear", "name": "x".repeat(10_000)}),
+        json!({"sketch": "Ear", "participants": ["*"]}),
+        json!([1, 2, 3]),
+        json!("tab"),
+    ] {
+        let _ = s.execute("sheet.tab", &p);
+    }
+}
