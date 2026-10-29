@@ -12,8 +12,8 @@ use solidcraft_geom::Vec3;
 use super::CommandSpec;
 use crate::params::{bad, bool_, str_, string_list, vec3};
 use crate::schema::component::{
-    EditInPlaceParams, EditInPlaceResult, FinishEditParams, FinishEditResult, MirrorComponentsParams, MirrorComponentsResult,
-    OccurrenceAlignParams, OccurrenceAlignResult,
+    EditInPlaceParams, EditInPlaceResult, FinishEditParams, FinishEditResult, MirrorComponentsParams, MirrorComponentsResult, OccurrenceAlignParams,
+    OccurrenceAlignResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};

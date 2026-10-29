@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use super::{
-    EditInPlaceParams, FinishEditParams, MirrorComponentsParams, MirrorComponentsResult, OccurrenceAlignParams, OccurrenceAlignResult,
-};
+use super::{EditInPlaceParams, FinishEditParams, MirrorComponentsParams, MirrorComponentsResult, OccurrenceAlignParams, OccurrenceAlignResult};
 use crate::Session;
 use crate::schema::tests::{assert_keys, assert_strict_keeps_todays_errors, conforms};
 use crate::schema::{ParamCheck, input_schema_for, output_schema_for};
