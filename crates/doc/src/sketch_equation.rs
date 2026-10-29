@@ -219,10 +219,11 @@ pub fn sample(vals: &BTreeMap<String, Value>, eq: &EquationCurve, count: usize, 
     let span = range(vals, eq, d)?;
     let mut points = samples(vals, eq, span, count, d)?;
     let closed = closed.unwrap_or_else(|| closes(&points)) && count >= 4;
-    if closed && let Some(first) = points.first().copied() {
-        if let Some(last) = points.last_mut() {
-            *last = first;
-        }
+    if closed
+        && let Some(first) = points.first().copied()
+        && let Some(last) = points.last_mut()
+    {
+        *last = first;
     }
     check_samples(&points, closed)?;
     let deviation = deviation(vals, eq, span, &points, closed, d)?;
