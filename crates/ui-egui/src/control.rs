@@ -549,6 +549,8 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             "status": app.status.as_ref().map(|(text, _, error)| json!({"text": text, "error": error})),
             "hover": app.viewport.hover.as_ref().map(|h| format!("{h:?}")),
             "agent_pos": app.agent.pos.map(|p| json!([p.x, p.y])),
+            "focused_widget": ctx.memory(|m| m.focused().map(|id| format!("{id:?}"))),
+            "window_focused": ctx.input(|i| i.focused),
             "renderer":if app.viewport.gpu.is_some() { "gpu" } else { "cpu" },
             "frame_ms": app.frame_ms,
             "draw": app.viewport.draw_stats.as_ref().and_then(|s| s.lock().ok().map(|d| json!({
@@ -1126,6 +1128,10 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         "ui.record.stop" => match app.recording.take() {
             Some(rec) => ok(crate::record::stop(rec)),
             None => err("not recording"),
+        },
+        "ui.record.status" => match app.recording.as_ref() {
+            Some(rec) => ok(json!({"recording": true, "frames": rec.frames(), "seconds": rec.frames() as f64 / rec.clock.fps})),
+            None => ok(json!({"recording": false})),
         },
         "ui.screenshot" => match s("path").map(vfs::check) {
             Some(Err(e)) => err(e),

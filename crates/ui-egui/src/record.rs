@@ -150,6 +150,9 @@ pub fn input_time(rec: Option<&Recording>, shift: &mut TimeShift, raw: &mut egui
         let t = rec.clock.time(rec.frames());
         raw.time = Some(t);
         raw.predicted_dt = (1.0 / rec.clock.fps) as f32;
+        // A recording is driven as if the window had the keyboard: egui keeps no text focus in an
+        // unfocused window, so a covered window's value boxes would never take Enter.
+        raw.focused = true;
         shift.last = t;
         shift.resync = true;
         return;
