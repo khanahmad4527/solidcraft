@@ -1,0 +1,7 @@
+| docs/book/src/generated/equation-circle.png | SolidCraft contributors | rendered by `cargo xtask book` (`solidcraft-cli snapshot docs/book/scripts/equation-circle.json`; gitignored) | MIT OR Apache-2.0 |
+| docs/book/src/generated/equation-flower.png | SolidCraft contributors | rendered by `cargo xtask book` (`solidcraft-cli snapshot docs/book/scripts/equation-flower.json`; gitignored) | MIT OR Apache-2.0 |
+| docs/book/src/generated/equation-involute.png | SolidCraft contributors | rendered by `cargo xtask book` (`solidcraft-cli snapshot docs/book/scripts/equation-involute.json`; gitignored) | MIT OR Apache-2.0 |
+| docs/book/src/generated/equation-line.png | SolidCraft contributors | rendered by `cargo xtask book` (`solidcraft-cli snapshot docs/book/scripts/equation-line.json`; gitignored) | MIT OR Apache-2.0 |
+| docs/book/src/generated/equation-parabola.png | SolidCraft contributors | rendered by `cargo xtask book` (`solidcraft-cli snapshot docs/book/scripts/equation-parabola.json`; gitignored) | MIT OR Apache-2.0 |
+| docs/book/src/generated/equation-spiral.png | SolidCraft contributors | rendered by `cargo xtask book` (`solidcraft-cli snapshot docs/book/scripts/equation-spiral.json`; gitignored) | MIT OR Apache-2.0 |
+| docs/book/src/generated/equation-wave.png | SolidCraft contributors | rendered by `cargo xtask book` (`solidcraft-cli snapshot docs/book/scripts/equation-wave.json`; gitignored) | MIT OR Apache-2.0 |
