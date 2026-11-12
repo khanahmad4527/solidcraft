@@ -1,0 +1,10 @@
+{"commands": [
+  {"command": "sketch.create", "params": {"plane": "XY", "name": "Base"}},
+  {"command": "sketch.circle.center", "params": {"center": [0, 0], "diameter": 240}},
+  {"command": "sketch.finish", "params": {}},
+  {"command": "solid.extrude", "params": {"distance": 40, "body_name": "Disc"}},
+  {"command": "appearance.assign", "params": {"bodies": ["Disc"], "color": "#c8ccd2", "pbr": {"metallic": 0, "roughness": 0.4, "dielectric_ior": 1.5}}},
+  {"command": "render.settings.set", "params": {"name": "Shot", "set": {"width": 3840, "height": 2160,
+     "camera": {"target": [0, 0, 20], "yaw": 0.4363323, "pitch": 0.4886922, "distance": 800, "fov": 0.5},
+     "job": {"method": "gpu_path", "options": {"samples": 64, "max_depth": 8, "seed": 0}}}}}
+]}
