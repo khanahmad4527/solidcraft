@@ -122,7 +122,16 @@ pub(crate) fn busy(app: &SolveApp) -> Vec<&'static str> {
     add(app.delete_check.is_some(), "delete_check");
     add(app.preview.busy, "preview");
     add(app.viewport.tess_ready.is_some(), "tessellation");
-    add(app.viewport.lod.lock().is_ok_and(|l| l.busy()), "refinement");
+    // Finished refinements are collected here: a frame collects them only once the camera has
+    // stood still on the frozen clock, so during a stepped camera move the gate waited on jobs
+    // that were done (20 s a frame). Only refinements still computing hold the frame.
+    add(
+        app.viewport.lod.lock().is_ok_and(|mut l| {
+            l.collect();
+            l.busy()
+        }),
+        "refinement",
+    );
     add(app.viewport.mesh_lods.busy(), "mesh_levels");
     busy
 }
