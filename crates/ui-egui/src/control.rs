@@ -684,6 +684,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         "mcp.options" => ok(json!({"compact": app.preferences.mcp_compact})),
         "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ui_inspect(app),
+        "ui.planes" => ui_planes(app),
         "ui.file" => with(p, |q| ui_file(app, q)),
         "ui.documents" => ok(crate::documents::control(app, p)),
         "ui.operations" => wrap(crate::operations::control(app, p)),
@@ -1031,6 +1032,24 @@ fn ui_plane_display(app: &mut SolveApp, p: &Value) -> Outcome {
         m.insert(name.to_string(), [at(0), at(1), half]);
     }
     ok(json!({"planes": m}))
+}
+
+/// `ui.planes`: the construction planes drawn now (the design's shown planes and the Origin's shown
+/// planes, as `Origin/XY` ...), whether a sketch is open, and the planes drawn at a size of their
+/// own (`ui.plane_display`). Cheap: names only, for a recording's per-frame plane check.
+fn ui_planes(app: &SolveApp) -> Outcome {
+    let mut shown: Vec<String> = solidcraft_engine::view::construction_planes(&app.session)
+        .into_iter()
+        .filter(|(_, n, _)| app.session.construction_visible(n))
+        .map(|(_, n, _)| n)
+        .collect();
+    for o in ["XY", "XZ", "YZ"] {
+        if !app.session.visibility.hidden_origin.iter().any(|h| h == o) {
+            shown.push(format!("Origin/{o}"));
+        }
+    }
+    let sized: Vec<&String> = app.viewport.plane_display.keys().collect();
+    ok(json!({"shown": shown, "sketch": app.session.active_sketch.is_some(), "sized": sized}))
 }
 
 /// `ui.inspect`: UI state, viewport rect, camera, tool and dialog.
