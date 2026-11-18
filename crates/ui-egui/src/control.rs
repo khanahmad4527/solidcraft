@@ -664,6 +664,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         }),
         "engine.batch" => with(p, |q| batch(app, q)),
         "ui.agent_cursor" => ui_agent_cursor(app, p),
+        "ui.plane_display" => ui_plane_display(app, p),
         "engine.script" => script(app, p),
         "engine.commands" => wrap(execute(app, "engine.commands", json!({}))),
         "document.inspect" => wrap(app.session.execute("document.inspect", p).map_err(|e| e.to_string())),
@@ -991,6 +992,15 @@ fn ui_agent_cursor(app: &mut SolveApp, p: &Value) -> Outcome {
     if let Some(v) = p.get("follow_camera").and_then(Value::as_bool) {
         s.follow_camera = v;
     }
+    match p.get("style").and_then(Value::as_str) {
+        Some("plain") => s.plain = true,
+        Some("agent") => s.plain = false,
+        Some(_) => return err("style must be \"plain\" or \"agent\""),
+        None => {}
+    }
+    if let Some(v) = p.get("ripple").and_then(Value::as_bool) {
+        s.no_ripple = !v;
+    }
     if let Some(v) = p.get("speed") {
         match crate::agent_cursor::Speed::from_value(v) {
             Some(sp) => s.speed = sp,
@@ -998,6 +1008,29 @@ fn ui_agent_cursor(app: &mut SolveApp, p: &Value) -> Outcome {
         }
     }
     ok(json!(app.ui.agent_cursor))
+}
+
+/// `ui.plane_display {name, half, center?}` / `{name, auto: true}` / `{clear: true}`: a
+/// construction plane drawn as a square of half side `half` (mm) round `center` (the plane's own
+/// coordinates, default its origin) instead of its automatic size. View only.
+fn ui_plane_display(app: &mut SolveApp, p: &Value) -> Outcome {
+    let m = &mut app.viewport.plane_display;
+    if p.get("clear").and_then(Value::as_bool) == Some(true) {
+        m.clear();
+        return ok(json!({"planes": {}}));
+    }
+    let Some(name) = p.get("name").and_then(Value::as_str) else { return err("name is required") };
+    if p.get("auto").and_then(Value::as_bool) == Some(true) {
+        m.remove(name);
+    } else {
+        let Some(half) = p.get("half").and_then(Value::as_f64).filter(|h| h.is_finite() && *h > 0.0) else {
+            return err("half must be a positive number (mm)");
+        };
+        let c = p.get("center").and_then(Value::as_array);
+        let at = |i: usize| c.and_then(|c| c.get(i)).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0);
+        m.insert(name.to_string(), [at(0), at(1), half]);
+    }
+    ok(json!({"planes": m}))
 }
 
 /// `ui.inspect`: UI state, viewport rect, camera, tool and dialog.

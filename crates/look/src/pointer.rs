@@ -17,3 +17,12 @@ pub fn paint(painter: &egui::Painter, p: Pos2) {
     painter.rect_filled(r, 4.0, ic.agent);
     painter.galley(r.min + vec2(5.0, 2.0), label, ic.highlight);
 }
+
+/// A plain pointer for recordings: a white arrow with a thin dark outline, no colour and no
+/// label (the system pointer's look), tip at `p`.
+pub fn paint_plain(painter: &egui::Painter, p: Pos2) {
+    let pts: Vec<Pos2> =
+        [(0.0, 0.0), (0.0, 17.0), (4.5, 13.0), (7.5, 20.0), (10.5, 18.8), (7.5, 12.0), (13.0, 12.0)].iter().map(|(x, y)| p + vec2(*x, *y)).collect();
+    painter.add(Shape::convex_polygon(pts.clone(), Color32::WHITE, Stroke::NONE));
+    painter.add(Shape::closed_line(pts, Stroke::new(1.0, Color32::from_black_alpha(220))));
+}
