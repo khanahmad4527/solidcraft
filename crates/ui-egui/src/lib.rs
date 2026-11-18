@@ -244,10 +244,10 @@ pub mod policy;
 pub mod prefs;
 pub mod prefs_notice;
 pub use solidcraft_ui_kit::prefs_window;
+pub mod framestep;
 #[cfg(test)]
 mod preselect_tests;
 pub mod preview;
-pub mod framestep;
 #[cfg(test)]
 mod preview_placement_tests;
 mod primitive_placement;

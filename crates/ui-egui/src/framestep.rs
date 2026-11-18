@@ -401,7 +401,8 @@ impl Recording {
         if let Some(child) = self.child.take() {
             match child.wait_with_output() {
                 Ok(out) => {
-                    ffmpeg = json!({"status": out.status.code(), "stderr": String::from_utf8_lossy(&out.stderr).chars().take(2000).collect::<String>()});
+                    ffmpeg =
+                        json!({"status": out.status.code(), "stderr": String::from_utf8_lossy(&out.stderr).chars().take(2000).collect::<String>()});
                     if !out.status.success() && self.error.is_none() {
                         self.error = Some("ffmpeg failed".into());
                     }

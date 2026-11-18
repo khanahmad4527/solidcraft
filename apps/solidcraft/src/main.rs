@@ -1283,7 +1283,9 @@ fn main() -> eframe::Result {
             "--safe-mode" => safe_mode = true,
             // `--framestep[=WxH]`: frame-stepped capture at that size (default 3840x2160).
             s if s == "--framestep" || s.starts_with("--framestep=") => {
-                let size = s.strip_prefix("--framestep=").map_or(Some(solidcraft_ui_egui::framestep::DEFAULT_SIZE), solidcraft_ui_egui::framestep::parse_size);
+                let size = s
+                    .strip_prefix("--framestep=")
+                    .map_or(Some(solidcraft_ui_egui::framestep::DEFAULT_SIZE), solidcraft_ui_egui::framestep::parse_size);
                 match size {
                     Some(size) => framestep = Some(size),
                     None => {
