@@ -1124,9 +1124,11 @@ impl Painter {
     }
 
     /// SolidCraft: one root frame of frame-stepped capture (`framestep`). Only an armed frame,
-    /// or one a screenshot asks for, is drawn: into the capture target, at the capture size,
-    /// then read back (waiting for the GPU) and handed on. Any other frame draws nothing; its
-    /// texture changes stay in `textures_delta` for the next drawn frame.
+    /// or one a screenshot asks for, is drawn: into the capture target, at the capture size, then
+    /// copied into a readback buffer that maps while the next frame runs (frames are handed on in
+    /// order as they map; with one frame in flight at most, at once). Any other frame draws
+    /// nothing and waits for the frames in flight; its texture changes stay in `textures_delta`
+    /// for the next drawn frame.
     fn paint_framestep(
         &mut self,
         size: (u32, u32),
@@ -1137,18 +1139,25 @@ impl Painter {
         capture_data: Vec<egui::ScreenshotCallback>,
     ) -> f32 {
         let armed = crate::framestep::take_armed();
-        if !armed && capture_data.is_empty() {
-            return 0.0;
-        }
         let Some(render_state) = self.render_state.as_mut() else {
             return 0.0;
         };
+        if armed.is_none() && capture_data.is_empty() {
+            if let Some(target) = self.framestep_target.as_mut() {
+                target.harvest_down_to(&render_state.device, 0);
+            }
+            return 0.0;
+        }
+        let started = web_time::Instant::now();
         let format = render_state.target_format;
         if self
             .framestep_target
             .as_ref()
             .is_none_or(|t| t.size != size || t.format != format)
         {
+            if let Some(old) = self.framestep_target.as_mut() {
+                old.harvest_down_to(&render_state.device, 0);
+            }
             self.framestep_target = Some(crate::framestep::Target::new(
                 &render_state.device,
                 size,
@@ -1243,8 +1252,10 @@ impl Painter {
                 renderer.render(&mut render_pass.forget_lifetime(), clipped_primitives, &screen_descriptor);
             }
         }
-        target.copy(&mut encoder);
-        render_state
+        let ticket = armed.map(|seq| {
+            target.encode_readback(&render_state.device, &mut encoder, crate::framestep::readout(), seq)
+        });
+        let submission = render_state
             .queue
             .submit(core::iter::chain(user_cmd_bufs, [encoder.finish()]));
         if let Some(effect) = &render_state.renderer.read().frame_compositor {
@@ -1257,12 +1268,14 @@ impl Painter {
                 renderer.free_texture(&id);
             }
         }
-        let started = web_time::Instant::now();
-        let format = target.format;
-        match target.read(&render_state.device) {
-            Ok(bytes) => {
-                if !capture_data.is_empty() {
-                    let swap = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        if let Some(ticket) = ticket {
+            target.submitted(ticket, submission);
+        }
+        crate::framestep::profile_add("paint_encode", started.elapsed());
+        if !capture_data.is_empty() {
+            match target.read_now(&render_state.device, &render_state.queue) {
+                Ok((pixels, bytes)) => {
+                    let swap = pixels == crate::framestep::Pixels::Bgra;
                     let pixels = bytes
                         .chunks_exact(4)
                         .map(|c| {
@@ -1278,17 +1291,12 @@ impl Painter {
                         callback.complete(Arc::clone(&image));
                     }
                 }
-                if armed {
-                    crate::framestep::deliver(crate::framestep::Frame {
-                        width: size.0,
-                        height: size.1,
-                        format,
-                        bytes,
-                    });
-                }
+                Err(error) => log::error!("framestep: the screenshot could not be read back: {error}"),
             }
-            Err(error) => log::error!("framestep: the frame could not be read back: {error}"),
         }
+        // Hand on what has mapped, waiting for the oldest frames until the next one may be armed
+        // (with one frame in flight at most, for this one).
+        target.harvest_down_to(&render_state.device, crate::framestep::in_flight() as usize - 1);
         started.elapsed().as_secs_f32()
     }
 

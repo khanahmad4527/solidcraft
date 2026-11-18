@@ -50,10 +50,15 @@ pub(crate) fn wall_ms() -> f64 {
 }
 
 /// Turn frame-stepped capture on for this run (at start, before the first frame).
+/// SOLIDCRAFT_FRAMESTEP_INFLIGHT=1..3 sets how many frames may be read back while the next ones
+/// run (default 2; 1 reads each back before the next frame).
 pub fn enable(size: (u32, u32)) {
     crate::ui_kit::clock::enable();
     egui_wgpu::framestep::set_size(Some(size));
     egui_wgpu::framestep::set_sink(Some(Box::new(sink)));
+    if let Some(n) = std::env::var("SOLIDCRAFT_FRAMESTEP_INFLIGHT").ok().and_then(|v| v.trim().parse().ok()) {
+        egui_wgpu::framestep::set_in_flight(n);
+    }
 }
 
 /// Whether this run captures frame by frame.
@@ -78,6 +83,8 @@ struct Step {
     waited_for: Vec<&'static str>,
     timeouts: u32,
     png_dir: Option<PathBuf>,
+    /// The readout to go back to once the step is done (PNG steps read back pixels).
+    restore_readout: Option<egui_wgpu::framestep::Readout>,
 }
 
 #[derive(Default)]
@@ -124,7 +131,12 @@ pub(crate) fn begin_frame(app: &SolveApp, raw: &mut egui::RawInput) -> bool {
     let ppp = NATIVE_PIXELS_PER_POINT * s.zoom.unwrap_or(1.0);
     raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32 / ppp, h as f32 / ppp)));
     raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(NATIVE_PIXELS_PER_POINT);
-    let step = s.step.as_mut().is_some_and(|step| next_frame(step, || busy(app), Instant::now()));
+    let step = s.step.as_mut().is_some_and(|step| {
+        let t = Instant::now();
+        let take = next_frame(step, || busy(app), t);
+        egui_wgpu::framestep::profile_add("step_check", t.elapsed());
+        take
+    });
     if let Some(t) = crate::ui_kit::clock::secs() {
         raw.time = Some(t);
     }
@@ -139,7 +151,8 @@ pub(crate) fn begin_frame(app: &SolveApp, raw: &mut egui::RawInput) -> bool {
 /// and is armed for capture.
 fn next_frame(step: &mut Step, busy: impl FnOnce() -> Vec<&'static str>, now: Instant) -> bool {
     let done = egui_wgpu::framestep::captured().saturating_sub(step.base);
-    if done < u64::from(step.issued) || step.issued >= step.frames || egui_wgpu::framestep::armed() {
+    let in_flight = u64::from(step.issued).saturating_sub(done);
+    if in_flight >= u64::from(egui_wgpu::framestep::in_flight()) || step.issued >= step.frames || egui_wgpu::framestep::armed() {
         return false;
     }
     let busy = busy();
@@ -159,8 +172,11 @@ fn next_frame(step: &mut Step, busy: impl FnOnce() -> Vec<&'static str>, now: In
         step.gate_wait += now.saturating_duration_since(since);
     }
     crate::ui_kit::clock::advance(step.dt);
-    *NEXT_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-        step.png_dir.as_ref().map(|d| d.join(format!("frame_{:06}.png", step.issued)));
+    if let Some(dir) = &step.png_dir {
+        // The painter numbers armed frames in order: this one is the next.
+        let seq = egui_wgpu::framestep::armed_total() + u64::from(egui_wgpu::framestep::armed());
+        NEXT_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push_back((seq, dir.join(format!("frame_{:06}.png", step.issued))));
+    }
     egui_wgpu::framestep::arm();
     step.issued += 1;
     true
@@ -180,12 +196,27 @@ pub(crate) fn after_logic(ctx: &egui::Context) {
     let done = egui_wgpu::framestep::captured().saturating_sub(step.base);
     if step.issued >= step.frames && done >= u64::from(step.frames) {
         let step = s.step.take().expect("checked above");
+        if let Some(r) = step.restore_readout {
+            egui_wgpu::framestep::set_readout(r);
+        }
         let _ = step.reply.send(json!({"ok": true, "result": step_report(&step)}));
     }
 }
 
+/// The time each part of making frames took since the last report (ms: mean, max, count).
+fn profile_report() -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, st) in egui_wgpu::framestep::profile_take() {
+        let ms = |d: Duration| (d.as_secs_f64() * 1e5).round() / 100.0;
+        let mean = if st.n > 0 { st.total / st.n as u32 } else { Duration::ZERO };
+        out.insert(name.to_string(), json!({"mean_ms": ms(mean), "max_ms": ms(st.max), "n": st.n}));
+    }
+    Value::Object(out)
+}
+
 fn step_report(step: &Step) -> Value {
     json!({
+        "profile": profile_report(),
         "frames": step.issued,
         "dt": step.dt,
         "clock": crate::ui_kit::clock::secs(),
@@ -241,6 +272,13 @@ pub(crate) fn control_step(ctx: &egui::Context, params: &Value, reply: Sender<Va
         Some(_) => return fail("`png_dir` must be a folder path"),
     };
     crate::ui_kit::clock::freeze(true);
+    let restore_readout = png_dir.as_ref().map(|_| {
+        let r = egui_wgpu::framestep::readout();
+        egui_wgpu::framestep::set_readout(egui_wgpu::framestep::Readout::Texture);
+        r
+    });
+    // The report's profile covers this step only.
+    let _ = egui_wgpu::framestep::profile_take();
     let step = Step {
         reply,
         frames,
@@ -253,8 +291,12 @@ pub(crate) fn control_step(ctx: &egui::Context, params: &Value, reply: Sender<Va
         waited_for: Vec::new(),
         timeouts: 0,
         png_dir,
+        restore_readout,
     };
     if frames == 0 {
+        if let Some(r) = step.restore_readout {
+            egui_wgpu::framestep::set_readout(r);
+        }
         let _ = step.reply.send(json!({"ok": true, "result": step_report(&step)}));
         return;
     }
@@ -268,19 +310,31 @@ pub(crate) fn control_step(ctx: &egui::Context, params: &Value, reply: Sender<Va
 struct Shot {
     width: u32,
     height: u32,
-    bgra: bool,
+    pixels: Pixels,
     bytes: Vec<u8>,
     png: Option<PathBuf>,
 }
 
+use egui_wgpu::framestep::Pixels;
+
 enum Msg {
     Frame(Shot),
-    Start { out: PathBuf, ffmpeg: Option<String>, args: Vec<String>, fps: f64, done: Sender<Result<(), String>> },
+    Start {
+        out: PathBuf,
+        ffmpeg: Option<String>,
+        args: Option<Vec<String>>,
+        fps: f64,
+        nv12: bool,
+        done: Sender<Result<(), String>>,
+    },
     Stop(Sender<Value>),
+    /// Frames written so far and how many differ from the one before (once the frames queued
+    /// before it are written).
+    Status(Sender<Value>),
 }
 
-/// Where the next captured frame's PNG goes (set as the frame is armed).
-static NEXT_PNG: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Where captured frames' PNGs go, by the frames' numbers (set as each frame is armed).
+static NEXT_PNG: Mutex<std::collections::VecDeque<(u64, PathBuf)>> = Mutex::new(std::collections::VecDeque::new());
 
 struct Writer {
     tx: SyncSender<Msg>,
@@ -305,17 +359,26 @@ fn writer() -> std::sync::MutexGuard<'static, Option<Writer>> {
 
 /// The painter's sink: a copy of the frame to the writer thread (waits while two are queued).
 fn sink(frame: egui_wgpu::framestep::Frame<'_>) {
-    let png = NEXT_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    let png = {
+        let mut q = NEXT_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while q.front().is_some_and(|(seq, _)| *seq < frame.seq) {
+            q.pop_front();
+        }
+        if q.front().is_some_and(|(seq, _)| *seq == frame.seq) { q.pop_front().map(|(_, p)| p) } else { None }
+    };
     let (tx, reused) = {
         let guard = writer();
         let Some(w) = guard.as_ref() else { return };
         (w.tx.clone(), w.pool.try_recv().ok())
     };
+    let t = Instant::now();
     let mut bytes = reused.unwrap_or_default();
     bytes.clear();
     bytes.extend_from_slice(frame.bytes);
-    let bgra = matches!(frame.format, egui_wgpu::wgpu::TextureFormat::Bgra8Unorm | egui_wgpu::wgpu::TextureFormat::Bgra8UnormSrgb);
-    let _ = tx.send(Msg::Frame(Shot { width: frame.width, height: frame.height, bgra, bytes, png }));
+    egui_wgpu::framestep::profile_add("sink_copy", t.elapsed());
+    let t = Instant::now();
+    let _ = tx.send(Msg::Frame(Shot { width: frame.width, height: frame.height, pixels: frame.pixels, bytes, png }));
+    egui_wgpu::framestep::profile_add("sink_queue_wait", t.elapsed());
 }
 
 /// A cheap fingerprint of a frame (tells repeated frames apart from new ones).
@@ -337,9 +400,14 @@ struct Recording {
     out: PathBuf,
     child: Option<std::process::Child>,
     pipe: Box<dyn std::io::Write + Send>,
-    args: Vec<String>,
+    /// The encoder arguments (None: the defaults for the layout).
+    args: Option<Vec<String>>,
     fps: f64,
-    size: Option<(u32, u32, bool)>,
+    /// Frames go out as NV12 (converted on the CPU when one comes back as pixels).
+    nv12: bool,
+    size: Option<(u32, u32, Pixels)>,
+    /// Reused for frames converted on the CPU.
+    converted: Vec<u8>,
     ffmpeg: Option<String>,
     frames: u64,
     unique: u64,
@@ -354,14 +422,25 @@ impl Recording {
         if self.error.is_some() {
             return;
         }
-        let key = (shot.width, shot.height, shot.bgra);
+        let mut bytes = &shot.bytes[..];
+        let mut pixels = shot.pixels;
+        if self.nv12 && pixels != Pixels::Nv12 {
+            let t = Instant::now();
+            egui_wgpu::framestep::to_nv12(&shot.bytes, shot.width, shot.height, pixels == Pixels::Bgra, &mut self.converted);
+            egui_wgpu::framestep::profile_add("cpu_nv12", t.elapsed());
+            bytes = &self.converted;
+            pixels = Pixels::Nv12;
+        }
+        let key = (shot.width, shot.height, pixels);
         if self.size.is_none() {
             if let Some(ffmpeg) = &self.ffmpeg {
                 let mut cmd = std::process::Command::new(ffmpeg);
                 cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt"])
-                    .arg(if shot.bgra { "bgra" } else { "rgba" })
-                    .args(["-s", &format!("{}x{}", shot.width, shot.height), "-r", &format!("{}", self.fps), "-i", "-"])
-                    .args(&self.args)
+                    .arg(pixels.ffmpeg_name())
+                    .args(["-s", &format!("{}x{}", shot.width, shot.height), "-r", &format!("{}", self.fps)])
+                    .args(input_tags(pixels))
+                    .args(["-i", "-"])
+                    .args(self.args.clone().unwrap_or_else(|| default_encoder_args(pixels)))
                     .arg(&self.out)
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::null())
@@ -379,14 +458,18 @@ impl Recording {
             }
             self.size = Some(key);
         } else if self.size != Some(key) {
-            self.error = Some("the frame size changed during the recording".into());
+            self.error = Some("the frame size or layout changed during the recording".into());
             return;
         }
-        if let Err(e) = self.pipe.write_all(&shot.bytes) {
+        let t = Instant::now();
+        if let Err(e) = self.pipe.write_all(bytes) {
             self.error = Some(format!("writing a frame: {e}"));
             return;
         }
-        let f = fingerprint(&shot.bytes);
+        egui_wgpu::framestep::profile_add("pipe_write", t.elapsed());
+        let t = Instant::now();
+        let f = fingerprint(bytes);
+        egui_wgpu::framestep::profile_add("fingerprint", t.elapsed());
         if self.last != Some(f) {
             self.unique += 1;
         }
@@ -415,7 +498,7 @@ impl Recording {
             "frames": self.frames,
             "unique_frames": self.unique,
             "size": self.size.map(|(w, h, _)| [w, h]),
-            "pix_fmt": self.size.map(|(_, _, bgra)| if bgra { "bgra" } else { "rgba" }),
+            "pix_fmt": self.size.map(|(_, _, p)| p.ffmpeg_name()),
             "wall_ms": self.began.elapsed().as_secs_f64() * 1000.0,
             "ffmpeg": ffmpeg,
             "error": self.error,
@@ -436,7 +519,7 @@ fn write_loop(rx: Receiver<Msg>, pool: Sender<Vec<u8>>) {
                 }
                 let _ = pool.send(shot.bytes);
             }
-            Msg::Start { out, ffmpeg, args, fps, done } => {
+            Msg::Start { out, ffmpeg, args, fps, nv12, done } => {
                 if let Some(old) = rec.take() {
                     old.finish();
                 }
@@ -454,7 +537,9 @@ fn write_loop(rx: Receiver<Msg>, pool: Sender<Vec<u8>>) {
                         pipe,
                         args,
                         fps,
+                        nv12,
                         size: None,
+                        converted: Vec::new(),
                         ffmpeg,
                         frames: 0,
                         unique: 0,
@@ -467,13 +552,20 @@ fn write_loop(rx: Receiver<Msg>, pool: Sender<Vec<u8>>) {
             Msg::Stop(done) => {
                 let _ = done.send(rec.take().map_or(Value::Null, Recording::finish));
             }
+            Msg::Status(done) => {
+                let _ = done.send(rec.as_ref().map_or(Value::Null, |r| json!({"frames": r.frames, "unique_frames": r.unique, "error": r.error})));
+            }
         }
     }
 }
 
 fn write_png(path: &std::path::Path, shot: &Shot) {
+    if shot.pixels == Pixels::Nv12 {
+        log::warn!("framestep: {}: the frame came back as NV12, not pixels", path.display());
+        return;
+    }
     let mut rgba = shot.bytes.clone();
-    if shot.bgra {
+    if shot.pixels == Pixels::Bgra {
         for px in rgba.chunks_exact_mut(4) {
             px.swap(0, 2);
         }
@@ -488,8 +580,43 @@ fn write_png(path: &std::path::Path, shot: &Shot) {
     }
 }
 
-/// The encoder arguments when `ui.record` gives none: HEVC on the Mac's media engine, 40 Mbit/s,
-/// BT.709 limited range (tagged), so players show the colours the window had.
+/// What the input frames are, for ffmpeg: NV12 frames are BT.709 limited range already. Without
+/// the tags ffmpeg 7.1 takes them for unknown colours and converts every frame (through RGB, on the
+/// CPU: 370 ms of CPU time a 4K frame) to the output's tags.
+fn input_tags(pixels: Pixels) -> &'static [&'static str] {
+    if pixels == Pixels::Nv12 { &["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"] } else { &[] }
+}
+
+/// The encoder arguments when `ui.record` gives none, for frames in `pixels`' layout.
+pub fn default_encoder_args(pixels: Pixels) -> Vec<String> {
+    let args: &[&str] = if pixels == Pixels::Nv12 { &NV12_ENCODER_ARGS } else { &DEFAULT_ENCODER_ARGS };
+    args.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// The encoder arguments for NV12 frames (already BT.709 limited range, made on the GPU):
+/// HEVC on the Mac's media engine, 40 Mbit/s, tagged so players show the window's colours;
+/// `prio_speed`: 9 ms a 4K frame instead of 15 (the same size and PSNR at this bit rate).
+pub const NV12_ENCODER_ARGS: [&str; 16] = [
+    "-c:v",
+    "hevc_videotoolbox",
+    "-b:v",
+    "40M",
+    "-prio_speed",
+    "1",
+    "-tag:v",
+    "hvc1",
+    "-colorspace",
+    "bt709",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
+    "-color_range",
+    "tv",
+];
+
+/// The encoder arguments for 4-byte frames when `ui.record` gives none: HEVC on the Mac's media
+/// engine, 40 Mbit/s, BT.709 limited range (tagged), so players show the colours the window had.
 pub const DEFAULT_ENCODER_ARGS: [&str; 16] = [
     "-vf",
     "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
@@ -509,22 +636,32 @@ pub const DEFAULT_ENCODER_ARGS: [&str; 16] = [
     "tv",
 ];
 
-/// `ui.record {out, fps?, ffmpeg?, args?}` starts writing captured frames: into ffmpeg (`ffmpeg`:
-/// its path, or `true` for the one on PATH; `args`: the encoder arguments after the input,
-/// [`DEFAULT_ENCODER_ARGS`] without) writing `out`, or without `ffmpeg` raw (`out` gets the bytes,
-/// `bgra` or `rgba` as the reply of `stop` says). `ui.record {stop: true}` ends it: frames written,
-/// how many differ from the frame before, ffmpeg's status.
+/// `ui.record {out, fps?, ffmpeg?, args?, pix_fmt?}` starts writing captured frames: into ffmpeg
+/// (`ffmpeg`: its path, or `true` for the one on PATH; `args`: the encoder arguments after the
+/// input, [`default_encoder_args`] without) writing `out`, or without `ffmpeg` raw (`out` gets the
+/// bytes). `pix_fmt`: `nv12` (BT.709 limited range, converted on the GPU: the default with
+/// ffmpeg) or `pixels` (the window's 4-byte pixels, `bgra` or `rgba` as the reply of `stop` says:
+/// the default for a raw file). `ui.record {status: true}`: frames written so far and how many
+/// differ from the frame before. `ui.record {stop: true}` ends it: the same, and ffmpeg's status.
 pub(crate) fn control_record(p: &Value) -> Result<Value, String> {
     if !enabled() {
         return Err("frame stepping is off: start SolidCraft with --framestep".into());
     }
-    if let Some(k) = p.as_object().and_then(|o| o.keys().find(|k| !["out", "fps", "ffmpeg", "args", "stop"].contains(&k.as_str()))) {
-        return Err(format!("unknown ui.record field `{k}` (it takes out, fps, ffmpeg, args, stop)"));
+    if let Some(k) =
+        p.as_object().and_then(|o| o.keys().find(|k| !["out", "fps", "ffmpeg", "args", "pix_fmt", "stop", "status"].contains(&k.as_str())))
+    {
+        return Err(format!("unknown ui.record field `{k}` (it takes out, fps, ffmpeg, args, pix_fmt, stop, status)"));
     }
     let tx = writer().as_ref().map(|w| w.tx.clone()).ok_or("the frame writer did not start")?;
+    if p.get("status").and_then(Value::as_bool) == Some(true) {
+        let (done, rx) = std::sync::mpsc::channel();
+        tx.send(Msg::Status(done)).map_err(|e| e.to_string())?;
+        return rx.recv_timeout(Duration::from_secs(50)).map_err(|e| format!("the writer did not answer: {e}"));
+    }
     if p.get("stop").and_then(Value::as_bool) == Some(true) {
         let (done, rx) = std::sync::mpsc::channel();
         tx.send(Msg::Stop(done)).map_err(|e| e.to_string())?;
+        egui_wgpu::framestep::set_readout(egui_wgpu::framestep::Readout::Texture);
         return rx.recv_timeout(Duration::from_secs(50)).map_err(|e| format!("the writer did not finish: {e}"));
     }
     let out = PathBuf::from(p.get("out").and_then(Value::as_str).ok_or("`out` (a file path) is needed")?);
@@ -539,14 +676,24 @@ pub(crate) fn control_record(p: &Value) -> Result<Value, String> {
         Some(_) => return Err("`ffmpeg` must be a path or true".into()),
     };
     let args = match p.get("args") {
-        None | Some(Value::Null) => DEFAULT_ENCODER_ARGS.iter().map(|s| (*s).to_string()).collect(),
-        Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(str::to_string).ok_or("`args` must be strings")).collect::<Result<_, _>>()?,
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(a.iter().map(|v| v.as_str().map(str::to_string).ok_or("`args` must be strings")).collect::<Result<_, _>>()?),
         Some(_) => return Err("`args` must be a list of strings".into()),
     };
+    // NV12 (made on the GPU) for an encoder, unless asked otherwise; the window's pixels raw.
+    let (w, h) = egui_wgpu::framestep::size().unwrap_or(DEFAULT_SIZE);
+    let nv12 = match p.get("pix_fmt").map(Value::as_str) {
+        None | Some(Some("auto")) => ffmpeg.is_some() && egui_wgpu::framestep::nv12_fits(w, h),
+        Some(Some("nv12")) if egui_wgpu::framestep::nv12_fits(w, h) => true,
+        Some(Some("nv12")) => return Err("`pix_fmt` nv12 needs a width divisible by 4".into()),
+        Some(Some("bgra" | "rgba" | "pixels")) => false,
+        Some(_) => return Err("`pix_fmt` must be \"nv12\", \"pixels\" or \"auto\"".into()),
+    };
     let (done, rx) = std::sync::mpsc::channel();
-    tx.send(Msg::Start { out: out.clone(), ffmpeg, args, fps, done }).map_err(|e| e.to_string())?;
+    tx.send(Msg::Start { out: out.clone(), ffmpeg, args, fps, nv12, done }).map_err(|e| e.to_string())?;
     rx.recv_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())??;
-    Ok(json!({"recording": out}))
+    egui_wgpu::framestep::set_readout(if nv12 { egui_wgpu::framestep::Readout::Nv12 } else { egui_wgpu::framestep::Readout::Texture });
+    Ok(json!({"recording": out, "pix_fmt": if nv12 { "nv12" } else { "pixels" }}))
 }
 
 #[cfg(test)]
@@ -585,6 +732,7 @@ mod tests {
             waited_for: Vec::new(),
             timeouts: 0,
             png_dir: None,
+            restore_readout: None,
         };
         (s, rx)
     }
@@ -628,6 +776,34 @@ mod tests {
         assert_eq!(s.issued, 3);
         assert_eq!(egui_wgpu::framestep::captured() - s.base, 3);
         assert!((crate::ui_kit::clock::secs().unwrap() - t0 - 0.1).abs() < 1e-12);
+        // Frames in flight: with two allowed, the next frame is armed while one is still being
+        // read back, a third only once the first is handed on; frames arrive in order.
+        egui_wgpu::framestep::set_in_flight(2);
+        let (mut s, _rx) = step(4);
+        assert!(next_frame(&mut s, Vec::new, now));
+        assert!(egui_wgpu::framestep::test_take());
+        assert!(next_frame(&mut s, Vec::new, now), "one in flight: the next frame runs");
+        assert!(egui_wgpu::framestep::test_take());
+        assert!(!next_frame(&mut s, Vec::new, now), "two in flight: wait");
+        egui_wgpu::framestep::test_deliver();
+        assert!(next_frame(&mut s, Vec::new, now));
+        assert!(egui_wgpu::framestep::test_take());
+        egui_wgpu::framestep::test_deliver();
+        egui_wgpu::framestep::test_deliver();
+        assert!(next_frame(&mut s, Vec::new, now));
+        deliver_armed();
+        assert!(!next_frame(&mut s, Vec::new, now));
+        assert_eq!(egui_wgpu::framestep::captured() - s.base, 4);
+        // One allowed: each frame is handed on before the next is armed.
+        egui_wgpu::framestep::set_in_flight(1);
+        let (mut s, _rx) = step(2);
+        assert!(next_frame(&mut s, Vec::new, now));
+        assert!(egui_wgpu::framestep::test_take());
+        assert!(!next_frame(&mut s, Vec::new, now));
+        egui_wgpu::framestep::test_deliver();
+        assert!(next_frame(&mut s, Vec::new, now));
+        deliver_armed();
+        egui_wgpu::framestep::set_in_flight(egui_wgpu::framestep::DEFAULT_IN_FLIGHT);
         crate::ui_kit::clock::disable();
     }
 
@@ -635,5 +811,53 @@ mod tests {
     fn deliver_armed() {
         assert!(egui_wgpu::framestep::armed());
         egui_wgpu::framestep::test_capture();
+    }
+
+    /// A recording that takes NV12 converts frames that come back as pixels (a PNG step's) on the
+    /// CPU, and counts frames and repeats; a raw file gets exactly the NV12 bytes.
+    #[test]
+    fn recordings_take_nv12_and_convert_pixels() {
+        let dir = std::env::temp_dir().join(format!("framestep-rec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("raw.nv12");
+        let mut rec = Recording {
+            out: out.clone(),
+            child: None,
+            pipe: Box::new(std::fs::File::create(&out).unwrap()),
+            args: None,
+            fps: 30.0,
+            nv12: true,
+            size: None,
+            converted: Vec::new(),
+            ffmpeg: None,
+            frames: 0,
+            unique: 0,
+            last: None,
+            began: Instant::now(),
+            error: None,
+        };
+        let white = Shot { width: 4, height: 2, pixels: Pixels::Bgra, bytes: vec![255; 32], png: None };
+        let mut nv12 = Vec::new();
+        egui_wgpu::framestep::to_nv12(&white.bytes, 4, 2, true, &mut nv12);
+        rec.write(&white);
+        rec.write(&Shot { width: 4, height: 2, pixels: Pixels::Nv12, bytes: nv12.clone(), png: None });
+        rec.write(&Shot { width: 4, height: 2, pixels: Pixels::Nv12, bytes: vec![16; 12], png: None });
+        let report = rec.finish();
+        assert_eq!((report["frames"].as_u64(), report["unique_frames"].as_u64()), (Some(3), Some(2)), "{report}");
+        assert_eq!(report["pix_fmt"], "nv12");
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(bytes, [nv12.clone(), nv12, vec![16; 12]].concat());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn encoder_arguments_follow_the_layout() {
+        let nv12 = default_encoder_args(Pixels::Nv12);
+        assert!(!nv12.iter().any(|a| a == "-vf"), "NV12 is already converted: {nv12:?}");
+        assert!(nv12.windows(2).any(|w| w == ["-c:v", "hevc_videotoolbox"]));
+        assert!(default_encoder_args(Pixels::Bgra).iter().any(|a| a == "-vf"));
+        // NV12 input is tagged, so ffmpeg converts nothing.
+        assert!(input_tags(Pixels::Nv12).windows(2).any(|w| w == ["-color_range", "tv"]));
+        assert!(input_tags(Pixels::Bgra).is_empty());
     }
 }

@@ -84,6 +84,20 @@ SolidCraft changes:
   `egui_pipeline` shader compilation, #6648) returns `WgpuError::CreateRendererError` through
   eframe so startup can retry another backend instead of invoking wgpu's panic handler.
 
+## eframe 0.37.0 (MIT OR Apache-2.0, Emil Ernerfeldt and contributors)
+
+Original package sources from https://github.com/emilk/egui/tree/0.37.0/crates/eframe, with
+both original licence texts retained (copied from the egui-wgpu package of the same release).
+
+SolidCraft changes:
+- `src/native/winit_integration.rs`, `src/native/run.rs`, `src/lib.rs`:
+  `eframe::set_hidden_unthrottled(true)` paints a hidden or minimised window as often as it
+  asks, without the 10 ms sleep after each of its frames and the 100 ms repaint interval eframe
+  otherwise keeps for such windows (egui#325, egui#7776). Off by default (eframe's behaviour);
+  SolidCraft turns it on only for frame-stepped capture (`--framestep`), whose hidden window
+  is drawn offscreen and asks for each frame itself: at eframe's pace a captured frame took at
+  least 100 ms.
+
 ## winit 0.30.13 (Apache-2.0, © The winit contributors, https://github.com/rust-windowing/winit)
 
 Original package sources from the 0.30.13 release, with the upstream licence retained. Example

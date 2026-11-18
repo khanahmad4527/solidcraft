@@ -166,6 +166,11 @@ pub struct CameraAnim {
     pub to: Camera,
     pub start: f64,
     pub duration: f64,
+    /// The heading's whole change (radians, either way, any number of turns) instead of the
+    /// shortest way to `to`'s heading: an orbit.
+    pub yaw_turn: Option<f64>,
+    /// At a constant pace instead of eased in and out.
+    pub linear: bool,
 }
 
 impl CameraAnim {
@@ -177,7 +182,7 @@ impl CameraAnim {
         let dy = (to.yaw - from.yaw + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
         let turn = dy.abs().max((to.pitch - from.pitch).abs());
         let k = if turn.is_finite() { (turn / std::f64::consts::FRAC_PI_2).clamp(1.0, 2.0) } else { 1.0 };
-        CameraAnim { from, to, start: now, duration: CameraAnim::DURATION * k }
+        CameraAnim { from, to, start: now, duration: CameraAnim::DURATION * k, yaw_turn: None, linear: false }
     }
     /// The camera at time `now`, and whether the move has finished.
     pub fn sample(&self, now: f64) -> (Camera, bool) {
@@ -185,7 +190,19 @@ impl CameraAnim {
         if !(t < 1.0) {
             return (self.to, true);
         }
-        (Camera::interpolate(&self.from, &self.to, ease_in_out(t)), false)
+        let s = if self.linear { t.max(0.0) } else { ease_in_out(t) };
+        let mut cam = Camera::interpolate(&self.from, &self.to, s);
+        if let Some(turn) = self.yaw_turn {
+            cam.yaw = self.from.yaw + turn * s;
+        }
+        (cam, false)
+    }
+
+    /// An orbit: from `from`, the heading turning by `turn` radians (any number of turns, either
+    /// way) over `duration` seconds while the other fields move to `to`'s; it ends on `to`.
+    pub fn orbit(from: Camera, mut to: Camera, turn: f64, now: f64, duration: f64, linear: bool) -> CameraAnim {
+        to.yaw = from.yaw + turn;
+        CameraAnim { from, to, start: now, duration, yaw_turn: Some(turn), linear }
     }
 }
 
@@ -821,6 +838,24 @@ mod tests {
         old.remove("roll");
         let restored: Camera = serde_json::from_value(serde_json::Value::Object(old)).unwrap();
         assert_eq!(restored.roll, 0.0);
+    }
+
+    #[test]
+    fn orbit_turns_the_whole_way_at_a_constant_pace() {
+        let mut a = Camera { target: Vec3::new(1.0, 2.0, 3.0), distance: 80.0, ..Default::default() };
+        a.set_view(StandardView::Iso);
+        let tau = std::f64::consts::TAU;
+        let anim = CameraAnim::orbit(a, a, tau, 2.0, 6.0, true);
+        // A full turn ends where it began (the shortest way would not move at all).
+        let (q, done) = anim.sample(3.5);
+        assert!(!done && (q.yaw - (a.yaw + tau / 4.0)).abs() < 1e-12, "a quarter of the time, a quarter turn");
+        assert!((anim.sample(5.0).0.yaw - (a.yaw + tau / 2.0)).abs() < 1e-12);
+        let (end, done) = anim.sample(8.0);
+        assert!(done && (end.yaw - (a.yaw + tau)).abs() < 1e-12 && end.pitch == a.pitch && end.distance == a.distance);
+        // Backwards, one and a half turns, eased: symmetric about the middle.
+        let back = CameraAnim::orbit(a, a, -1.5 * tau, 0.0, 4.0, false);
+        assert!((back.sample(2.0).0.yaw - (a.yaw - 0.75 * tau)).abs() < 1e-12);
+        assert!(back.sample(1.0).0.yaw > a.yaw - 0.75 * tau / 2.0, "eased: slower at the start");
     }
 
     #[test]

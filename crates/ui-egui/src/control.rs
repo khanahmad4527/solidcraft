@@ -1460,7 +1460,7 @@ fn app_quit(app: &mut SolveApp, ctx: &egui::Context, q: params::Quit) -> Outcome
 /// `false` frames nothing.
 /// Nothing changes when a field is refused.
 fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
-    const FIELDS: [&str; 9] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit", "glide"];
+    const FIELDS: [&str; 11] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit", "glide", "orbit", "ease"];
     let mut o = match p {
         Value::Null => serde_json::Map::new(),
         Value::Object(o) => o.clone(),
@@ -1477,6 +1477,24 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
             _ => return Err("`glide` must be seconds from 0 to 600".into()),
         },
     };
+    // `orbit`: degrees the heading turns on the way (any number of turns, either way), over
+    // `glide`; `ease`: "in_out" (default) or "linear" (a constant pace).
+    let orbit = match o.remove("orbit") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_f64() {
+            Some(d) if d.is_finite() && d.abs() <= 36_000.0 => Some(d.to_radians()),
+            _ => return Err("`orbit` must be degrees, at most 36000 either way".into()),
+        },
+    };
+    let linear = match o.remove("ease") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(e)) if e == "linear" => true,
+        Some(Value::String(e)) if e == "in_out" => false,
+        Some(_) => return Err("`ease` must be \"in_out\" or \"linear\"".into()),
+    };
+    if orbit.is_some() && glide <= 0.0 {
+        return Err("`orbit` needs `glide`: the seconds it takes".into());
+    }
     let mut cam = drawn(app);
     let sets = o.keys().any(|k| k != "fit");
     if sets {
@@ -1518,7 +1536,7 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
         Some(_) => return Err("`fit` must be true, false or a list of occurrences".into()),
     };
     // A read leaves a view change that is animating alone.
-    if !sets && fit.is_none() {
+    if !sets && fit.is_none() && orbit.is_none() {
         return serde_json::to_value(drawn(app)).map_err(|e| e.to_string());
     }
     app.cancel_view_animation();
@@ -1533,8 +1551,16 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
     if glide > 0.0 {
         let to = app.cam;
         app.cam = from;
-        let mut anim = solidcraft_viewport::CameraAnim::new(from, to, app.now);
-        anim.duration = glide;
+        let anim = match orbit {
+            Some(turn) => solidcraft_viewport::CameraAnim::orbit(from, to, turn, app.now, glide, linear),
+            None => {
+                let mut anim = solidcraft_viewport::CameraAnim::new(from, to, app.now);
+                anim.duration = glide;
+                anim.linear = linear;
+                anim
+            }
+        };
+        let to = anim.to;
         app.cam_anim = Some(anim);
         return serde_json::to_value(to).map_err(|e| e.to_string());
     }
@@ -3532,6 +3558,15 @@ mod tests {
         let yaw = h.app.cam.yaw;
         let r = raw(&mut h, "ui.camera", json!({ "yaw": yaw }));
         assert!(r["ok"] == true && h.app.cam_anim.is_none(), "{r}");
+        // An orbit: one call, the turn played on the app's clock; the reply is where it ends.
+        let yaw = h.app.cam.yaw;
+        let r = raw(&mut h, "ui.camera", json!({"orbit": 360, "glide": 6, "ease": "linear"}));
+        let anim = h.app.cam_anim.expect("an orbit animates");
+        assert!(r["ok"] == true && anim.linear && anim.duration == 6.0, "{r}");
+        assert!((anim.yaw_turn.unwrap() - std::f64::consts::TAU).abs() < 1e-12);
+        assert!((r["result"]["yaw"].as_f64().unwrap() - (yaw + std::f64::consts::TAU)).abs() < 1e-9, "{r}");
+        assert!((anim.sample(anim.start + 1.5).0.yaw - (yaw + std::f64::consts::FRAC_PI_2)).abs() < 1e-9);
+        h.app.cam_anim = None;
         h.app.cam = before;
         let mut cam = |p: Value| {
             let r = h.call("ui.camera", p);
@@ -3567,6 +3602,9 @@ mod tests {
             json!({"yaw": 1, "fit": ["Nope"]}),
             json!({"fit": []}),
             json!({"fit": 1}),
+            json!({"orbit": 90}),
+            json!({"orbit": "x", "glide": 1}),
+            json!({"glide": 1, "yaw": 1, "ease": "bouncy"}),
             json!([1, 2]),
         ] {
             let before = h.app.cam;

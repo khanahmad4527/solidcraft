@@ -1323,6 +1323,9 @@ fn main() -> eframe::Result {
     }
     if let Some(size) = framestep {
         solidcraft_ui_egui::framestep::enable(size);
+        // The hidden window is drawn as fast as steps ask for frames, not every 100 ms as eframe
+        // draws hidden windows (SOLIDCRAFT_FRAMESTEP_THROTTLE=1 keeps eframe's pace).
+        eframe::set_hidden_unthrottled(std::env::var_os("SOLIDCRAFT_FRAMESTEP_THROTTLE").is_none());
     }
     // Files given while SolidCraft already runs open in that window, and this launch ends (#18055).
     // Not with a control port, the sample or safe mode, which want a window of their own; no answer
