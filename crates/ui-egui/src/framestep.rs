@@ -115,6 +115,11 @@ pub(crate) fn busy(app: &SolveApp) -> Vec<&'static str> {
     add(crate::open_meshing::active(app), "meshing");
     add(app.op_check.busy(), "op_check");
     add(app.control_job.is_some(), "control_job");
+    // A feature's OK evaluated off the window thread, a history recompute (a rename, the marker,
+    // undo) and the commands queued behind it, a delete's check: each ends on the wall clock.
+    add(app.applying.is_some(), "apply");
+    add(app.deferred.is_some() || !app.deferred_queue.is_empty(), "deferred");
+    add(app.delete_check.is_some(), "delete_check");
     add(app.preview.busy, "preview");
     add(app.viewport.tess_ready.is_some(), "tessellation");
     add(app.viewport.lod.lock().is_ok_and(|l| l.busy()), "refinement");
