@@ -247,6 +247,7 @@ pub use solidcraft_ui_kit::prefs_window;
 #[cfg(test)]
 mod preselect_tests;
 pub mod preview;
+pub mod framestep;
 #[cfg(test)]
 mod preview_placement_tests;
 mod primitive_placement;
@@ -3876,6 +3877,7 @@ impl SolveApp {
             }
         }
         control::publish_design(self, &control::DOCUMENT_WATCH);
+        framestep::after_logic(ctx);
     }
 
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
@@ -3894,7 +3896,11 @@ impl SolveApp {
     /// Process a frame with a platform-identified pen-tip release in egui coordinates.
     pub fn raw_input_hook_with_pen(&mut self, raw: &mut egui::RawInput, pen_release: Option<egui::Pos2>) {
         self.pen_release = pen_release;
-        self.synthetic_input(raw);
+        // Frame-stepped capture: the frame's size and time; queued input goes to steps only.
+        let step = framestep::begin_frame(self, raw);
+        if step || !ui_kit::clock::frozen() {
+            self.synthetic_input(raw);
+        }
         finite_input(raw);
         self.hold_click_after_typing(raw);
         issue_report::hold_input(self, raw);
@@ -4276,6 +4282,11 @@ impl SolveApp {
             return;
         };
         let reply = req.reply.clone();
+        // A frame-stepped capture is answered once its frames are captured (`framestep`).
+        if req.method == "ui.step" {
+            framestep::control_step(ctx, &req.params, reply);
+            return;
+        }
         match control::handle(self, ctx, &req) {
             control::Outcome::Done(v) => {
                 if self.preferences.plugin_grants != self.session.plugin_state.grants {
@@ -4284,7 +4295,7 @@ impl SolveApp {
                 }
                 let _ = reply.send(v);
             }
-            control::Outcome::Screenshot { path } => self.shots.request(ctx, path, reply, req.chat_turn, now_ms()),
+            control::Outcome::Screenshot { path } => self.shots.request(ctx, path, reply, req.chat_turn, framestep::wall_ms()),
         }
         ctx.request_repaint();
     }
@@ -4293,12 +4304,12 @@ impl SolveApp {
         // A view that just moved is drawn with fewer AO samples: shoot the full-quality frame
         // that follows (#7165), or after half a second a view that keeps moving as it is.
         let settled = viewport::ao_settled(self, ctx);
-        self.shots.issue(ctx, settled, now_ms());
+        self.shots.issue(ctx, settled, framestep::wall_ms());
     }
 
     fn collect_screenshots(&mut self, ctx: &egui::Context) {
         let report = issue_report::pending(self);
-        let shots = self.shots.collect(ctx, now_ms(), report, control::save_screenshot);
+        let shots = self.shots.collect(ctx, framestep::wall_ms(), report, control::save_screenshot);
         for (token, image) in shots {
             issue_report::receive(self, token, image);
         }
@@ -4381,9 +4392,10 @@ pub fn friendly_error(id: &str, e: &str) -> String {
     if msg.starts_with(label) { msg.to_string() } else { format!("{label}: {msg}") }
 }
 
+/// Milliseconds since the Unix epoch by the app's clock: the wall clock, or the virtual one of a
+/// frame-stepped capture (`ui_kit::clock`, `framestep`).
 pub fn now_ms() -> f64 {
-    use web_time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+    ui_kit::clock::now_ms()
 }
 
 #[cfg(test)]

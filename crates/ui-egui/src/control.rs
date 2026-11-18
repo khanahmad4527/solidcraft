@@ -773,6 +773,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             _ => Outcome::Screenshot { path: q.path },
         }),
         "ui.render" => with(p, |q| ui_render(app, q)),
+        "ui.record" => wrap(crate::framestep::control_record(p)),
         "app.quit" => with(p, |q| app_quit(app, ctx, q)),
         other => err(format!("unknown method `{other}`")),
     }
@@ -1459,8 +1460,8 @@ fn app_quit(app: &mut SolveApp, ctx: &egui::Context, q: params::Quit) -> Outcome
 /// `false` frames nothing.
 /// Nothing changes when a field is refused.
 fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
-    const FIELDS: [&str; 8] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit"];
-    let o = match p {
+    const FIELDS: [&str; 9] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit", "glide"];
+    let mut o = match p {
         Value::Null => serde_json::Map::new(),
         Value::Object(o) => o.clone(),
         _ => return Err("params must be an object".into()),
@@ -1468,6 +1469,14 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
     if let Some(k) = o.keys().find(|k| !FIELDS.contains(&k.as_str())) {
         return Err(format!("unknown camera field `{k}` (it takes {})", FIELDS.join(", ")));
     }
+    // `glide`: seconds the view takes to get there (eased, as a view change), else at once.
+    let glide = match o.remove("glide") {
+        None | Some(Value::Null) => 0.0,
+        Some(v) => match v.as_f64() {
+            Some(g) if g.is_finite() && (0.0..=600.0).contains(&g) => g,
+            _ => return Err("`glide` must be seconds from 0 to 600".into()),
+        },
+    };
     let mut cam = drawn(app);
     let sets = o.keys().any(|k| k != "fit");
     if sets {
@@ -1514,11 +1523,20 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
     }
     app.cancel_view_animation();
     app.viewport.orbit_free = None;
+    let from = app.cam;
     app.cam = cam;
     match fit {
         Some(None) => app.fit_view(),
         Some(Some(b)) => app.fit_bounds(b),
         None => {}
+    }
+    if glide > 0.0 {
+        let to = app.cam;
+        app.cam = from;
+        let mut anim = solidcraft_viewport::CameraAnim::new(from, to, app.now);
+        anim.duration = glide;
+        app.cam_anim = Some(anim);
+        return serde_json::to_value(to).map_err(|e| e.to_string());
     }
     serde_json::to_value(drawn(app)).map_err(|e| e.to_string())
 }

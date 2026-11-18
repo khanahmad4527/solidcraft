@@ -37,6 +37,9 @@ pub mod capture;
 #[cfg(feature = "winit")]
 pub mod winit;
 
+/// SolidCraft: frame-stepped capture at a fixed size, independent of the window.
+pub mod framestep;
+
 use std::sync::Arc;
 
 use epaint::mutex::RwLock;

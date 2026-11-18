@@ -798,7 +798,7 @@ impl FrameCompositor for Shared {
         }
         if let Ok(mut inner) = self.inner.lock() {
             if inner.rendered && inner.counts.markers_drawn > inner.drawn_before && !self.host.lost.is_lost() {
-                let now = std::time::Instant::now();
+                let now = crate::clock::instant();
                 inner.painted = Some(PaintedFrame {
                     frame: inner.frame,
                     interval_ms: inner.submitted_at.map(|at| now.duration_since(at).as_secs_f64() * 1000.0),

@@ -41,6 +41,8 @@ pub struct Painter {
     options: RendererOptions,
     support_transparent_backbuffer: bool,
     screen_capture_state: Option<CaptureState>,
+    // SolidCraft: the frame-stepped capture's own target (`framestep`).
+    framestep_target: Option<crate::framestep::Target>,
 
     instance: wgpu::Instance,
     render_state: Option<RenderState>,
@@ -79,6 +81,7 @@ impl Painter {
             options,
             support_transparent_backbuffer,
             screen_capture_state: None,
+            framestep_target: None,
 
             instance,
             render_state: None,
@@ -695,6 +698,7 @@ impl Painter {
         /// internal buffers growing indefinitely.
         ///
         /// This may happen, for example, if no output frame is resolved.
+
         /// See <https://github.com/emilk/egui/pull/7928> for full context.
         struct RendererQueueGuard<'q> {
             queue: &'q wgpu::Queue,
@@ -732,6 +736,21 @@ impl Painter {
             self.context
                 .request_repaint_after_for(std::time::Duration::from_millis(250), viewport_id);
             return vsync_sec;
+        }
+
+        // SolidCraft: frame-stepped capture draws the root window offscreen, at its own size,
+        // and never touches the window's surface (`framestep`).
+        if viewport_id == ViewportId::ROOT
+            && let Some(size) = crate::framestep::size()
+        {
+            return self.paint_framestep(
+                size,
+                pixels_per_point,
+                clear_color,
+                clipped_primitives,
+                textures_delta,
+                capture_data,
+            );
         }
 
         // If the previous frame produced `CurrentSurfaceTexture::Lost`, the action match
@@ -1102,6 +1121,175 @@ impl Painter {
         }
 
         vsync_sec
+    }
+
+    /// SolidCraft: one root frame of frame-stepped capture (`framestep`). Only an armed frame,
+    /// or one a screenshot asks for, is drawn: into the capture target, at the capture size,
+    /// then read back (waiting for the GPU) and handed on. Any other frame draws nothing; its
+    /// texture changes stay in `textures_delta` for the next drawn frame.
+    fn paint_framestep(
+        &mut self,
+        size: (u32, u32),
+        pixels_per_point: f32,
+        clear_color: [f32; 4],
+        clipped_primitives: &[epaint::ClippedPrimitive],
+        textures_delta: &mut epaint::textures::TexturesDelta,
+        capture_data: Vec<egui::ScreenshotCallback>,
+    ) -> f32 {
+        let armed = crate::framestep::take_armed();
+        if !armed && capture_data.is_empty() {
+            return 0.0;
+        }
+        let Some(render_state) = self.render_state.as_mut() else {
+            return 0.0;
+        };
+        let format = render_state.target_format;
+        if self
+            .framestep_target
+            .as_ref()
+            .is_none_or(|t| t.size != size || t.format != format)
+        {
+            self.framestep_target = Some(crate::framestep::Target::new(
+                &render_state.device,
+                size,
+                format,
+                self.options.msaa_samples,
+                self.options.depth_stencil_format,
+            ));
+        }
+        let Some(target) = self.framestep_target.as_mut() else {
+            return 0.0;
+        };
+        if let Some(effect) = &render_state.renderer.read().frame_compositor {
+            effect.begin_viewport(ViewportId::ROOT.0.value());
+        }
+        let mut encoder = render_state
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("framestep") });
+        let screen_descriptor = renderer::ScreenDescriptor {
+            size_in_pixels: [size.0, size.1],
+            pixels_per_point,
+        };
+        let user_cmd_bufs = {
+            let mut renderer = render_state.renderer.write();
+            #[expect(clippy::iter_over_hash_type)] // Order doesn't matter here
+            for (id, image_deltas) in textures_delta.set.drain() {
+                for image_delta in image_deltas {
+                    renderer.update_texture(&render_state.device, &render_state.queue, id, &image_delta);
+                }
+            }
+            renderer.update_buffers(
+                &render_state.device,
+                &render_state.queue,
+                &mut encoder,
+                clipped_primitives,
+                &screen_descriptor,
+            )
+        };
+        {
+            let renderer = render_state.renderer.read();
+            let target_view = target.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let (view, resolve_target) = match &target.msaa {
+                Some(msaa) => (msaa, Some(&target_view)),
+                None => (&target_view, None),
+            };
+            let composed = self.options.msaa_samples <= 1
+                && self.options.depth_stencil_format.is_none()
+                && renderer.frame_compositor.as_ref().is_some_and(|effect| {
+                    effect.render(
+                        &renderer,
+                        &mut encoder,
+                        &target_view,
+                        clipped_primitives,
+                        &screen_descriptor,
+                        clear_color,
+                    )
+                });
+            if !composed {
+                let depth = self.options.depth_stencil_format;
+                let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("framestep_render"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: clear_color[0] as f64,
+                                g: clear_color[1] as f64,
+                                b: clear_color[2] as f64,
+                                a: clear_color[3] as f64,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: target.depth.as_ref().map(|view| {
+                        wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: depth.is_some_and(|f| f.has_depth_aspect()).then_some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                            stencil_ops: depth.is_some_and(|f| f.has_stencil_aspect()).then_some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(0),
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                        }
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                renderer.render(&mut render_pass.forget_lifetime(), clipped_primitives, &screen_descriptor);
+            }
+        }
+        target.copy(&mut encoder);
+        render_state
+            .queue
+            .submit(core::iter::chain(user_cmd_bufs, [encoder.finish()]));
+        if let Some(effect) = &render_state.renderer.read().frame_compositor {
+            effect.submitted();
+        }
+        {
+            let mut renderer = render_state.renderer.write();
+            #[expect(clippy::iter_over_hash_type)] // Order doesn't matter here
+            for id in textures_delta.free.drain() {
+                renderer.free_texture(&id);
+            }
+        }
+        let started = web_time::Instant::now();
+        let format = target.format;
+        match target.read(&render_state.device) {
+            Ok(bytes) => {
+                if !capture_data.is_empty() {
+                    let swap = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+                    let pixels = bytes
+                        .chunks_exact(4)
+                        .map(|c| {
+                            if swap {
+                                epaint::Color32::from_rgba_premultiplied(c[2], c[1], c[0], c[3])
+                            } else {
+                                epaint::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])
+                            }
+                        })
+                        .collect();
+                    let image = Arc::new(epaint::ColorImage::new([size.0 as usize, size.1 as usize], pixels));
+                    for callback in capture_data {
+                        callback.complete(Arc::clone(&image));
+                    }
+                }
+                if armed {
+                    crate::framestep::deliver(crate::framestep::Frame {
+                        width: size.0,
+                        height: size.1,
+                        format,
+                        bytes,
+                    });
+                }
+            }
+            Err(error) => log::error!("framestep: the frame could not be read back: {error}"),
+        }
+        started.elapsed().as_secs_f32()
     }
 
     pub fn gc_viewports(&mut self, active_viewports: &ViewportIdSet) {

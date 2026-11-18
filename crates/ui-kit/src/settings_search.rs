@@ -901,10 +901,9 @@ pub fn follow(ui: &Ui, label: &str, rect: Rect) {
     solidcraft_ui_registry::publish_handle(&format!("{}:revealed", reveal.prefix), rect.center());
 }
 
-/// Wall clock in milliseconds, for how long a reveal stays outlined.
+/// The app's clock in milliseconds ([`crate::clock`]), for how long a reveal stays outlined.
 fn now_ms() -> f64 {
-    use web_time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+    crate::clock::now_ms()
 }
 
 #[cfg(test)]
