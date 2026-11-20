@@ -1360,7 +1360,7 @@ fn a_batch_stopped_by_a_failing_step_ends_failed() {
 fn a_batch_the_cursor_acts_out_computes_nothing_on_the_window_thread() {
     for edit in [false, true] {
         let (mut h, tx) = agent_harness();
-        h.app.ui.agent_cursor = crate::agent_cursor::Settings { show: true, speed: crate::agent_cursor::Speed::Times(5.0), follow_camera: false };
+        h.app.ui.agent_cursor = crate::agent_cursor::Settings { show: true, speed: crate::agent_cursor::Speed::Times(5.0), follow_camera: false, ..Default::default() };
         let features = h.app.session.doc.features.len();
         let hole = |x: f64| json!({"command": "solid.cylinder", "params": {"base": [x, 10, -1], "axis": [0, 0, 1], "radius": 2, "height": 20, "operation": "cut"}});
         let batch = ask(&tx, "engine.batch", json!({"commands": [hole(50.0), hole(30.0)]}));
