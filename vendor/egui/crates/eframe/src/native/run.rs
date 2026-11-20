@@ -14,7 +14,7 @@ use crate::{
     Result, epi,
     native::{
         event_loop_context,
-        winit_integration::{EventResult, PassMode, is_invisible_or_minimized},
+        winit_integration::{self, EventResult, PassMode, is_invisible_or_minimized},
     },
 };
 
@@ -254,7 +254,7 @@ impl<T: WinitApp> WinitAppWrapper<T> {
         // to avoid busy-looping. If no repaint was requested by the app,
         // the window will simply sleep.
         // See: https://github.com/emilk/egui/issues/7776
-        if !invisible_window_ids.is_empty() {
+        if !invisible_window_ids.is_empty() && !winit_integration::hidden_unthrottled() {
             let next_paint = Instant::now() + INVISIBLE_WINDOW_REPAINT_INTERVAL;
             for window_id in &invisible_window_ids {
                 self.windows_next_repaint_times
@@ -375,6 +375,7 @@ impl<T: WinitApp> ApplicationHandler<UserEvent> for WinitAppWrapper<T> {
                             // See: https://github.com/emilk/egui/issues/7776
                             let when = if let Some(window) = self.winit_app.window(window_id)
                                 && is_invisible_or_minimized(&window)
+                                && !winit_integration::hidden_unthrottled()
                             {
                                 when.max(Instant::now() + INVISIBLE_WINDOW_REPAINT_INTERVAL)
                             } else {

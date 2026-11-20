@@ -666,6 +666,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         }),
         "engine.batch" => with(p, |q| batch(app, q)),
         "ui.agent_cursor" => ui_agent_cursor(app, p),
+        "ui.plane_display" => ui_plane_display(app, p),
         "engine.script" => script(app, p),
         "engine.commands" => wrap(execute(app, "engine.commands", json!({}))),
         "document.inspect" => wrap(app.session.execute("document.inspect", p).map_err(|e| e.to_string())),
@@ -688,6 +689,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         "mcp.options" => ok(json!({"compact": app.preferences.mcp_compact})),
         "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ui_inspect(app),
+        "ui.planes" => ui_planes(app),
         "ui.file" => with(p, |q| ui_file(app, q)),
         "ui.documents" => ok(crate::documents::control(app, p)),
         "ui.operations" => wrap(crate::operations::control(app, p)),
@@ -778,6 +780,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             _ => Outcome::Screenshot { path: q.path },
         }),
         "ui.render" => with(p, |q| ui_render(app, q)),
+        "ui.record" => wrap(crate::framestep::control_record(p)),
         "app.quit" => with(p, |q| app_quit(app, ctx, q)),
         other => err(format!("unknown method `{other}`")),
     }
@@ -1006,6 +1009,15 @@ fn ui_agent_cursor(app: &mut SolveApp, p: &Value) -> Outcome {
     if let Some(v) = p.get("follow_camera").and_then(Value::as_bool) {
         s.follow_camera = v;
     }
+    match p.get("style").and_then(Value::as_str) {
+        Some("plain") => s.plain = true,
+        Some("agent") => s.plain = false,
+        Some(_) => return err("style must be \"plain\" or \"agent\""),
+        None => {}
+    }
+    if let Some(v) = p.get("ripple").and_then(Value::as_bool) {
+        s.no_ripple = !v;
+    }
     if let Some(v) = p.get("speed") {
         match crate::agent_cursor::Speed::from_value(v) {
             Some(sp) => s.speed = sp,
@@ -1013,6 +1025,47 @@ fn ui_agent_cursor(app: &mut SolveApp, p: &Value) -> Outcome {
         }
     }
     ok(json!(app.ui.agent_cursor))
+}
+
+/// `ui.plane_display {name, half, center?}` / `{name, auto: true}` / `{clear: true}`: a
+/// construction plane drawn as a square of half side `half` (mm) round `center` (the plane's own
+/// coordinates, default its origin) instead of its automatic size. View only.
+fn ui_plane_display(app: &mut SolveApp, p: &Value) -> Outcome {
+    let m = &mut app.viewport.plane_display;
+    if p.get("clear").and_then(Value::as_bool) == Some(true) {
+        m.clear();
+        return ok(json!({"planes": {}}));
+    }
+    let Some(name) = p.get("name").and_then(Value::as_str) else { return err("name is required") };
+    if p.get("auto").and_then(Value::as_bool) == Some(true) {
+        m.remove(name);
+    } else {
+        let Some(half) = p.get("half").and_then(Value::as_f64).filter(|h| h.is_finite() && *h > 0.0) else {
+            return err("half must be a positive number (mm)");
+        };
+        let c = p.get("center").and_then(Value::as_array);
+        let at = |i: usize| c.and_then(|c| c.get(i)).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0);
+        m.insert(name.to_string(), [at(0), at(1), half]);
+    }
+    ok(json!({"planes": m}))
+}
+
+/// `ui.planes`: the construction planes drawn now (the design's shown planes and the Origin's shown
+/// planes, as `Origin/XY` ...), whether a sketch is open, and the planes drawn at a size of their
+/// own (`ui.plane_display`). Cheap: names only, for a recording's per-frame plane check.
+fn ui_planes(app: &SolveApp) -> Outcome {
+    let mut shown: Vec<String> = solidcraft_engine::view::construction_planes(&app.session)
+        .into_iter()
+        .filter(|(_, n, _)| app.session.construction_visible(n))
+        .map(|(_, n, _)| n)
+        .collect();
+    for o in ["XY", "XZ", "YZ"] {
+        if !app.session.visibility.hidden_origin.iter().any(|h| h == o) {
+            shown.push(format!("Origin/{o}"));
+        }
+    }
+    let sized: Vec<&String> = app.viewport.plane_display.keys().collect();
+    ok(json!({"shown": shown, "sketch": app.session.active_sketch.is_some(), "sized": sized}))
 }
 
 /// `ui.inspect`: UI state, viewport rect, camera, tool and dialog.
@@ -1522,14 +1575,40 @@ fn app_quit(app: &mut SolveApp, ctx: &egui::Context, q: params::Quit) -> Outcome
 /// `false` frames nothing.
 /// Nothing changes when a field is refused.
 fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
-    const FIELDS: [&str; 8] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit"];
-    let o = match p {
+    const FIELDS: [&str; 11] = ["target", "yaw", "pitch", "roll", "distance", "fov", "up", "fit", "glide", "orbit", "ease"];
+    let mut o = match p {
         Value::Null => serde_json::Map::new(),
         Value::Object(o) => o.clone(),
         _ => return Err("params must be an object".into()),
     };
     if let Some(k) = o.keys().find(|k| !FIELDS.contains(&k.as_str())) {
         return Err(format!("unknown camera field `{k}` (it takes {})", FIELDS.join(", ")));
+    }
+    // `glide`: seconds the view takes to get there (eased, as a view change), else at once.
+    let glide = match o.remove("glide") {
+        None | Some(Value::Null) => 0.0,
+        Some(v) => match v.as_f64() {
+            Some(g) if g.is_finite() && (0.0..=600.0).contains(&g) => g,
+            _ => return Err("`glide` must be seconds from 0 to 600".into()),
+        },
+    };
+    // `orbit`: degrees the heading turns on the way (any number of turns, either way), over
+    // `glide`; `ease`: "in_out" (default) or "linear" (a constant pace).
+    let orbit = match o.remove("orbit") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_f64() {
+            Some(d) if d.is_finite() && d.abs() <= 36_000.0 => Some(d.to_radians()),
+            _ => return Err("`orbit` must be degrees, at most 36000 either way".into()),
+        },
+    };
+    let linear = match o.remove("ease") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(e)) if e == "linear" => true,
+        Some(Value::String(e)) if e == "in_out" => false,
+        Some(_) => return Err("`ease` must be \"in_out\" or \"linear\"".into()),
+    };
+    if orbit.is_some() && glide <= 0.0 {
+        return Err("`orbit` needs `glide`: the seconds it takes".into());
     }
     let mut cam = drawn(app);
     let sets = o.keys().any(|k| k != "fit");
@@ -1572,16 +1651,33 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
         Some(_) => return Err("`fit` must be true, false or a list of occurrences".into()),
     };
     // A read leaves a view change that is animating alone.
-    if !sets && fit.is_none() {
+    if !sets && fit.is_none() && orbit.is_none() {
         return serde_json::to_value(drawn(app)).map_err(|e| e.to_string());
     }
     app.cancel_view_animation();
     app.viewport.orbit_free = None;
+    let from = app.cam;
     app.cam = cam;
     match fit {
         Some(None) => app.fit_view(),
         Some(Some(b)) => app.fit_bounds(b),
         None => {}
+    }
+    if glide > 0.0 {
+        let to = app.cam;
+        app.cam = from;
+        let anim = match orbit {
+            Some(turn) => solidcraft_viewport::CameraAnim::orbit(from, to, turn, app.now, glide, linear),
+            None => {
+                let mut anim = solidcraft_viewport::CameraAnim::new(from, to, app.now);
+                anim.duration = glide;
+                anim.linear = linear;
+                anim
+            }
+        };
+        let to = anim.to;
+        app.cam_anim = Some(anim);
+        return serde_json::to_value(to).map_err(|e| e.to_string());
     }
     serde_json::to_value(drawn(app)).map_err(|e| e.to_string())
 }
@@ -3989,6 +4085,15 @@ pub(crate) mod tests {
         let yaw = h.app.cam.yaw;
         let r = raw(&mut h, "ui.camera", json!({ "yaw": yaw }));
         assert!(r["ok"] == true && h.app.cam_anim.is_none(), "{r}");
+        // An orbit: one call, the turn played on the app's clock; the reply is where it ends.
+        let yaw = h.app.cam.yaw;
+        let r = raw(&mut h, "ui.camera", json!({"orbit": 360, "glide": 6, "ease": "linear"}));
+        let anim = h.app.cam_anim.expect("an orbit animates");
+        assert!(r["ok"] == true && anim.linear && anim.duration == 6.0, "{r}");
+        assert!((anim.yaw_turn.unwrap() - std::f64::consts::TAU).abs() < 1e-12);
+        assert!((r["result"]["yaw"].as_f64().unwrap() - (yaw + std::f64::consts::TAU)).abs() < 1e-9, "{r}");
+        assert!((anim.sample(anim.start + 1.5).0.yaw - (yaw + std::f64::consts::FRAC_PI_2)).abs() < 1e-9);
+        h.app.cam_anim = None;
         h.app.cam = before;
         let mut cam = |p: Value| {
             let r = h.call("ui.camera", p);
@@ -4024,6 +4129,9 @@ pub(crate) mod tests {
             json!({"yaw": 1, "fit": ["Nope"]}),
             json!({"fit": []}),
             json!({"fit": 1}),
+            json!({"orbit": 90}),
+            json!({"orbit": "x", "glide": 1}),
+            json!({"glide": 1, "yaw": 1, "ease": "bouncy"}),
             json!([1, 2]),
         ] {
             let before = h.app.cam;

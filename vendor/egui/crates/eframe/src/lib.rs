@@ -193,6 +193,11 @@ mod native;
 #[cfg(target_os = "macos")]
 pub use native::macos::WindowChromeMetrics;
 
+// SolidCraft: paint hidden windows unthrottled (frame-stepped capture).
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(feature = "glow", feature = "wgpu_no_default_features"))]
+pub use native::winit_integration::{hidden_unthrottled, set_hidden_unthrottled};
+
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(any(feature = "glow", feature = "wgpu_no_default_features"))]
 pub use native::run::EframeWinitApplication;

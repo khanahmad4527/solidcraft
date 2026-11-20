@@ -743,7 +743,7 @@ impl FrameCompositor for Shared {
         let id = windows.painting;
         let Some(inner) = windows.map.get_mut(&id) else { return };
         if inner.rendered && inner.counts.markers_drawn > inner.drawn_before && !lost {
-            let now = std::time::Instant::now();
+            let now = crate::clock::instant();
             inner.painted = Some(PaintedFrame {
                 frame: inner.frame,
                 interval_ms: inner.submitted_at.map(|at| now.duration_since(at).as_secs_f64() * 1000.0),

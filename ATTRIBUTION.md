@@ -1055,6 +1055,10 @@ skipped with a warning instead of panicking (#1469).
 Paint callbacks are prepared only after a drawable is acquired, so a skipped
 surface frame cannot strand cached meshes without their GPU initialization.
 
+In `vendor/egui`, SolidCraft's eframe patch lets the app paint a hidden window without
+eframe's throttle, and its egui-wgpu patch draws frame-stepped capture offscreen (frame-stepped
+capture only).
+
 ## Runtime studio lighting mathematics
 
 `crates/gpu/src/path/path.wgsl` implements the power-heuristic estimator from the

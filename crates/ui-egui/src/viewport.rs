@@ -103,6 +103,10 @@ pub struct ViewportState {
     /// Where each construction plane made from a face is drawn, for one world state (held, as
     /// `pick_bounds` is): [`plane_face_covers`].
     plane_faces: std::sync::Mutex<Option<PlaneFaces>>,
+    /// Construction planes drawn at a size of their own (`ui.plane_display`): name -> the square's
+    /// centre in the plane's coordinates and its half side (mm). View only: not saved, the model
+    /// is unchanged; others keep the automatic size.
+    pub plane_display: std::collections::HashMap<String, [f64; 3]>,
     /// Membership of the active assembly placement, shared by model and feedback rendering.
     active_bodies: std::sync::Mutex<Option<ActiveBodies>>,
     /// The model scene's blocks of bodies by key, from the last scene built.
@@ -3646,6 +3650,11 @@ pub fn construction_quads(app: &SolveApp) -> Vec<(String, Vec3, [Vec3; 4])> {
         .into_iter()
         .filter(|(_, n, _)| app.session.construction_visible(n))
         .map(|(_, name, pl)| {
+            if let Some([cx, cy, half]) = app.viewport.plane_display.get(&name).copied() {
+                let (c, m) = (Vec2::new(cx, cy), Vec2::new(half, half));
+                let q = [c - m, Vec2::new(c.x + half, c.y - half), c + m, Vec2::new(c.x - half, c.y + half)];
+                return (name, pl.normal(), q.map(|p| pl.to_world(p)));
+            }
             let mut r = match faces.get(&name) {
                 // The face's size, and never smaller than a quarter of the square (zoomed out).
                 Some(face) => {

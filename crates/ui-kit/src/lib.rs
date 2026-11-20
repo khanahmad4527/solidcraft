@@ -11,6 +11,7 @@ pub mod app_bar;
 pub mod app_bar_layout;
 pub mod blur;
 pub mod browser;
+pub mod clock;
 pub mod frame;
 pub mod history_bar;
 pub mod nav_bar;

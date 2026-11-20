@@ -114,10 +114,26 @@ mod tests {
 /// On Windows, an invisible window also uses up all CPU:
 /// <https://github.com/emilk/egui/issues/7776>
 pub fn sleep_if_invisible_or_minimized(window: Option<&Window>) {
-    if window.is_some_and(is_invisible_or_minimized) {
+    if !hidden_unthrottled() && window.is_some_and(is_invisible_or_minimized) {
         profiling::scope!("minimized_sleep");
         std::thread::sleep(core::time::Duration::from_millis(10));
     }
+}
+
+// SolidCraft: a hidden window can be painted at full speed (frame-stepped capture draws it
+// offscreen and asks for every frame itself), without the sleep and the 100 ms repaint interval
+// that otherwise keep a hidden or minimised window from using up a CPU core.
+static HIDDEN_UNTHROTTLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// SolidCraft: paint hidden and minimised windows as often as they ask (`true`), or throttled as
+/// eframe does (`false`, the default).
+pub fn set_hidden_unthrottled(on: bool) {
+    HIDDEN_UNTHROTTLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// SolidCraft: whether hidden windows are painted unthrottled ([`set_hidden_unthrottled`]).
+pub fn hidden_unthrottled() -> bool {
+    HIDDEN_UNTHROTTLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// What [`WinitApp::run_ui_and_paint`] runs.

@@ -149,6 +149,16 @@ separate copy at `vendor/egui-wgpu` before egui was vendored as a whole):
   error scopes, awaiting every result before returning it. A refused UI pipeline (D3D12
   `egui_pipeline` shader compilation, #6648) returns `WgpuError::CreateRendererError` through
   eframe so startup can retry another backend instead of invoking wgpu's panic handler.
+- `crates/eframe/src/native/winit_integration.rs`, `crates/eframe/src/native/run.rs`,
+  `crates/eframe/src/lib.rs`: `eframe::set_hidden_unthrottled(true)` paints a hidden or minimised
+  window as often as it asks, without the 10 ms sleep after each of its frames and the 100 ms
+  repaint interval eframe otherwise keeps for such windows (egui#325, egui#7776). Off by default
+  (eframe's behaviour); SolidCraft turns it on only for frame-stepped capture (`--framestep`),
+  whose hidden window is drawn offscreen and asks for each frame itself: at eframe's pace a
+  captured frame took at least 100 ms.
+- `crates/egui-wgpu/src/framestep.rs`, `crates/egui-wgpu/src/lib.rs`, `crates/egui-wgpu/src/winit.rs`:
+  frame-stepped capture draws the root window into an offscreen target of its own size and reads
+  each armed frame back (`framestep`), never touching the window's surface.
 
 ## winit 0.30.13 (Apache-2.0, © The winit contributors, https://github.com/rust-windowing/winit)
 

@@ -237,6 +237,11 @@ impl eframe::App for App {
                 fit_window_to_work_area(ctx, _frame);
             }
             mark(if self.window_frames == 1 { "first frame begins" } else { "second frame begins (first presented)" });
+            // Frame-stepped capture draws offscreen: its window is hidden as soon as eframe shows
+            // it (in the same turn, before the screen updates), unless SOLIDCRAFT_FRAMESTEP_SHOW=1.
+            if self.window_frames == 1 && solidcraft_ui_egui::framestep::enabled() && std::env::var_os("SOLIDCRAFT_FRAMESTEP_SHOW").is_none() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
             ctx.request_repaint();
             // The window is shown only once its first frame is presented, and Windows then keeps
             // a window of a process started from a shortcut or an installer behind the others. Ask
@@ -590,7 +595,7 @@ fn graphics_restart_args(args: impl IntoIterator<Item = String>) -> Vec<String> 
                     retained.extend([argument, value]);
                 }
             }
-            value if value.starts_with("--max-file-size=") => retained.push(argument),
+            value if value.starts_with("--max-file-size=") || value == "--framestep" || value.starts_with("--framestep=") => retained.push(argument),
             _ => {}
         }
     }
@@ -1303,6 +1308,8 @@ fn main() -> eframe::Result {
     let mut max_file_size = None;
     // `--new-instance`: open this launch as its own app even when SolidCraft already runs.
     let mut new_instance = false;
+    // Frame-stepped capture (`ui.step`): the flag, or SOLIDCRAFT_FRAMESTEP=3840x2160.
+    let mut framestep = std::env::var("SOLIDCRAFT_FRAMESTEP").ok().and_then(|v| solidcraft_ui_egui::framestep::parse_size(&v));
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -1313,6 +1320,19 @@ fn main() -> eframe::Result {
             "--max-file-size" => max_file_size = Some(args.next()),
             s if s.starts_with("--max-file-size=") => max_file_size = Some(s.strip_prefix("--max-file-size=").map(str::to_string)),
             "--safe-mode" => safe_mode = true,
+            // `--framestep[=WxH]`: frame-stepped capture at that size (default 3840x2160).
+            s if s == "--framestep" || s.starts_with("--framestep=") => {
+                let size = s
+                    .strip_prefix("--framestep=")
+                    .map_or(Some(solidcraft_ui_egui::framestep::DEFAULT_SIZE), solidcraft_ui_egui::framestep::parse_size);
+                match size {
+                    Some(size) => framestep = Some(size),
+                    None => {
+                        solidcraft_engine::note!("SolidCraft: --framestep takes a size such as 3840x2160 (even, 16 to 8192)");
+                        return Ok(());
+                    }
+                }
+            }
             "--view" => solidcraft_ui_egui::new_window::set_start_view(&args.next().unwrap_or_default()),
             "--version" | "-V" => {
                 println!("solidcraft {}", env!("CARGO_PKG_VERSION"));
@@ -1333,12 +1353,18 @@ fn main() -> eframe::Result {
             }
             "--help" | "-h" => {
                 println!(
-                    "usage: solidcraft [--control PORT] [--sample] [--theme-file THEME.json] [--crash-log] [--safe-mode] [--new-instance] [--max-file-size SIZE] [--view model|sketch|sheet|render|animation] [design.sc | part.step]"
+                    "usage: solidcraft [--control PORT] [--sample] [--theme-file THEME.json] [--crash-log] [--safe-mode] [--new-instance] [--max-file-size SIZE] [--framestep[=WxH]] [--view model|sketch|sheet|render|animation] [design.sc | part.step]"
                 );
                 return Ok(());
             }
             _ => files.push(a),
         }
+    }
+    if let Some(size) = framestep {
+        solidcraft_ui_egui::framestep::enable(size);
+        // The hidden window is drawn as fast as steps ask for frames, not every 100 ms as eframe
+        // draws hidden windows (SOLIDCRAFT_FRAMESTEP_THROTTLE=1 keeps eframe's pace).
+        eframe::set_hidden_unthrottled(std::env::var_os("SOLIDCRAFT_FRAMESTEP_THROTTLE").is_none());
     }
     // Files given while SolidCraft already runs open in that window, and this launch ends (#18055).
     // Not with a control port, the sample or safe mode, which want a window of their own; no answer
@@ -1559,6 +1585,21 @@ fn main() -> eframe::Result {
             use winit::platform::x11::EventLoopBuilderExtX11;
             b.with_x11();
         }));
+    }
+    // Frame-stepped capture runs beside the user's own work: its window never takes the focus
+    // (no activation at launch, not focused when it opens) and needs not be seen at all.
+    // SOLIDCRAFT_NO_ACTIVATE=1 asks the same of any automated run.
+    #[allow(unused_mut, clippy::allow_attributes)]
+    let mut options = options;
+    if solidcraft_ui_egui::framestep::enabled() || std::env::var_os("SOLIDCRAFT_NO_ACTIVATE").is_some() {
+        options.viewport = options.viewport.with_active(false);
+        #[cfg(target_os = "macos")]
+        {
+            options.event_loop_builder = Some(Box::new(|b| {
+                use winit::platform::macos::EventLoopBuilderExtMacOS;
+                b.with_activate_ignoring_other_apps(false);
+            }));
+        }
     }
     // Files opened from Finder and the Dock arrive as events, not arguments.
     #[cfg(target_os = "macos")]

@@ -128,6 +128,11 @@ pub struct Settings {
     pub show: bool,
     pub speed: Speed,
     pub follow_camera: bool,
+    /// The plain look for recordings: a white arrow, no colour, no "Agent" tag, no command
+    /// names (`ui.agent_cursor {style: "plain"}`).
+    pub plain: bool,
+    /// No click ripples (`ui.agent_cursor {ripple: false}`).
+    pub no_ripple: bool,
 }
 
 /// A request held back while the pointer acts it out.
@@ -579,9 +584,19 @@ pub fn paint(app: &SolveApp, ctx: &egui::Context) {
     }
     let Some(p) = app.agent.pos else { return };
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::unique("sc_agent_cursor")));
-    for (at, t0) in &app.agent.ripples {
+    let s = app.ui.agent_cursor;
+    for (at, t0) in app.agent.ripples.iter().filter(|_| !s.no_ripple) {
         let k = ((app.now - t0) / 0.6).clamp(0.0, 1.0) as f32;
-        painter.circle_stroke(*at, 6.0 + 22.0 * k, Stroke::new(3.0 * (1.0 - k) + 0.5, agent().gamma_multiply(1.0 - k)));
+        if s.plain {
+            // Subtle: a thin light ring that fades.
+            painter.circle_stroke(*at, 5.0 + 12.0 * k, Stroke::new(1.0, egui::Color32::WHITE.gamma_multiply(0.45 * (1.0 - k))));
+        } else {
+            painter.circle_stroke(*at, 6.0 + 22.0 * k, Stroke::new(3.0 * (1.0 - k) + 0.5, agent().gamma_multiply(1.0 - k)));
+        }
+    }
+    if s.plain {
+        solidcraft_look::pointer::paint_plain(&painter, p);
+        return;
     }
     solidcraft_look::pointer::paint(&painter, p);
     if let Some((_, label, _)) = app.agent.job.as_ref().and_then(|job| job.stops.front()).filter(|(_, label, _)| !label.is_empty()) {

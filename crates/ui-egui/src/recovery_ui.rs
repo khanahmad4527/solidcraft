@@ -67,9 +67,11 @@ fn save_slot(dir: &Path, slot: &mut Option<Autosaver>, session: &Session, due: b
 pub fn tick(app: &mut SolveApp) {
     let big = std::mem::take(&mut app.big_operation);
     let Some(a) = app.autosave.as_mut() else { return };
-    let due = a.last_at.elapsed() >= a.interval;
+    // The app's clock (`ui_kit::clock`): autosaves come at the same virtual times in a stepped capture.
+    let now = crate::ui_kit::clock::instant();
+    let due = now.saturating_duration_since(a.last_at) >= a.interval;
     if due {
-        a.last_at = Instant::now();
+        a.last_at = now;
     }
     let mut error = None;
     for slot in app.docs.background_mut() {
@@ -95,7 +97,7 @@ pub fn start(app: &mut SolveApp, dir: &std::path::Path, interval: std::time::Dur
     match Autosaver::new(dir, SHARED_CADENCE) {
         Ok(a) => {
             app.recoverable = recovery::orphans(dir);
-            app.autosave = Some(Autosaves { dir: dir.to_path_buf(), interval, active: Some(a), last_at: Instant::now() });
+            app.autosave = Some(Autosaves { dir: dir.to_path_buf(), interval, active: Some(a), last_at: crate::ui_kit::clock::instant() });
         }
         Err(e) => app.set_status(format!("autosave is off: {e}"), true),
     }
